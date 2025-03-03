@@ -1,2 +1,2 @@
 symbol,balance,initial_investment,profit_loss,return_pct,position,entry_price,position_size,timestamp,test_mode
-SOLUSDT,50.0,50.0,0.0,0.0,short,162.55,0.1537988311288834,2025-03-03 21:55:34,True
+SOLUSDT,100.0,100.0,0.0,0.0,short,159.01,0.001,2025-03-03 22:46:11,True

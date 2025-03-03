@@ -10,6 +10,7 @@ import argparse
 from dotenv import load_dotenv
 from realtime.real_trader import RealtimeTrader
 from datetime import datetime
+from binance.exceptions import BinanceAPIException
 
 
 def main():
@@ -90,31 +91,41 @@ def main():
     try:
         print(f"Starting {'test' if args.test else 'real'} trading...")
         result = trader.run_real_trading(
-            duration_hours=args.hours, update_interval_minutes=args.interval
+            duration_hours=args.hours,
+            update_interval_minutes=args.interval
         )
-
+        
         # Display final results
         if result:
             print("\n=== Final Results ===")
             print(f"Final Balance: ${result['final_balance']:.2f}")
             print(f"Profit/Loss: ${result['profit_loss']:.2f}")
             print(f"Return: {result['return_pct']:.2f}%")
-
+    
     except KeyboardInterrupt:
         print("\nTrading interrupted by user")
-
+        
         # Close any open positions
         if trader.has_open_position():
             print("Closing open position...")
             current_price = trader.get_current_price()
             close_result = trader.close_position(current_price, datetime.now(), "user_interrupt")
-
+            
             if close_result:
                 print(f"Position closed: {close_result}")
-
+    
+    except BinanceAPIException as e:
+        if "Precision is over the maximum defined for this asset" in str(e):
+            print("\nERROR: Precision is over the maximum defined for this asset.")
+            print("This error occurs when the quantity precision is too high for the asset.")
+            print("Try increasing your investment amount or reducing the risk per trade.")
+            print("You can also try using the --test flag to run in test mode first.")
+        else:
+            print(f"\nBinance API Error: {e}")
+    
     except Exception as e:
         print(f"Error in trading: {e}")
-
+    
     finally:
         print("Trading session ended")
 

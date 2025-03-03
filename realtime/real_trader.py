@@ -17,6 +17,7 @@ from .utils.trade_manager import (
     calculate_position_metrics,
 )
 from .utils.reporting import save_results
+import math
 
 # Load environment variables
 load_dotenv()
@@ -288,6 +289,126 @@ class RealtimeTrader:
 
         return None
 
+    def get_symbol_info(self):
+        """Get symbol information including precision requirements"""
+        try:
+            # For spot trading
+            exchange_info = self.client.get_exchange_info()
+            
+            # Find the symbol info
+            for symbol_info in exchange_info['symbols']:
+                if symbol_info['symbol'] == self.symbol:
+                    return symbol_info
+                    
+            return None
+        except BinanceAPIException as e:
+            print(f"Error getting symbol info: {e}")
+            return None
+
+    def get_futures_symbol_info(self):
+        """Get futures symbol information including precision requirements"""
+        try:
+            # For futures trading
+            futures_exchange_info = self.client.futures_exchange_info()
+            
+            # Find the symbol info
+            for symbol_info in futures_exchange_info['symbols']:
+                if symbol_info['symbol'] == self.symbol:
+                    return symbol_info
+                    
+            return None
+        except BinanceAPIException as e:
+            print(f"Error getting futures symbol info: {e}")
+            return None
+
+    def get_quantity_precision(self):
+        """Get the quantity precision for the symbol"""
+        # Try futures first
+        futures_info = self.get_futures_symbol_info()
+        if futures_info and 'quantityPrecision' in futures_info:
+            return futures_info['quantityPrecision']
+        
+        # Fall back to spot trading calculation
+        symbol_info = self.get_symbol_info()
+        if not symbol_info:
+            # Default to 5 decimal places if we can't get the info
+            return 5
+            
+        # Get the lot size filter
+        for filter in symbol_info['filters']:
+            if filter['filterType'] == 'LOT_SIZE':
+                step_size = float(filter['stepSize'])
+                # Calculate precision based on step size
+                if step_size == 1.0:
+                    return 0
+                precision = 0
+                step_size_str = "{:0.8f}".format(step_size)
+                while step_size_str[len(step_size_str) - 1 - precision] == '0':
+                    precision += 1
+                return 8 - precision
+                
+        # Default to 5 decimal places if we can't find the LOT_SIZE filter
+        return 5
+
+    def get_price_precision(self):
+        """Get the price precision for the symbol"""
+        # Try futures first
+        futures_info = self.get_futures_symbol_info()
+        if futures_info and 'pricePrecision' in futures_info:
+            return futures_info['pricePrecision']
+        
+        # Fall back to spot trading calculation
+        symbol_info = self.get_symbol_info()
+        if not symbol_info:
+            # Default to 2 decimal places if we can't get the info
+            return 2
+            
+        # Get the price filter
+        for filter in symbol_info['filters']:
+            if filter['filterType'] == 'PRICE_FILTER':
+                tick_size = float(filter['tickSize'])
+                # Calculate precision based on tick size
+                if tick_size == 1.0:
+                    return 0
+                precision = 0
+                tick_size_str = "{:0.8f}".format(tick_size)
+                while tick_size_str[len(tick_size_str) - 1 - precision] == '0':
+                    precision += 1
+                return 8 - precision
+                
+        # Default to 2 decimal places if we can't find the PRICE_FILTER filter
+        return 2
+
+    def get_min_notional(self):
+        """Get the minimum notional value (order value) for the symbol"""
+        symbol_info = self.get_symbol_info()
+        if not symbol_info:
+            # Default to 10 if we can't get the info
+            return 10.0
+            
+        # Get the min notional filter
+        for filter in symbol_info['filters']:
+            if filter['filterType'] == 'MIN_NOTIONAL':
+                return float(filter['minNotional'])
+                
+        # Default to 10 if we can't find the MIN_NOTIONAL filter
+        return 10.0
+
+    def get_min_quantity(self):
+        """Get the minimum quantity for the symbol"""
+        symbol_info = self.get_symbol_info()
+        if not symbol_info:
+            # Default to 0.001 if we can't get the info
+            return 0.001
+            
+        # Get the lot size filter
+        for filter in symbol_info['filters']:
+            if filter['filterType'] == 'LOT_SIZE':
+                return float(filter['minQty'])
+                
+        # Default to 0.001 if we can't find the LOT_SIZE filter
+        return 0.001
+
     def execute_trade(self, signal, current_price, timestamp):
         """Execute trade with risk management"""
         # Don't trade if trading is disabled due to losses
@@ -297,204 +418,396 @@ class RealtimeTrader:
             self.daily_loss = 0
             self.trading_disabled = False
             self.last_reset_day = current_day
-
+            
         if self.trading_disabled:
             print("Trading disabled due to reaching maximum daily loss")
             return None
-
+        
         # Don't trade if there's already an open position
         if self.has_open_position():
             print("Already have an open position, skipping trade")
             return None
-
+        
         # Don't trade if balance is too low
         account_balance = self.get_account_balance()
         if account_balance < (self.initial_investment * 0.5):
             print(f"Balance too low (${account_balance:.2f}), trading paused")
             return None
-
+        
+        # Get the correct precision for the quantity and price
+        quantity_precision = self.get_quantity_precision()
+        price_precision = self.get_price_precision()
+        min_quantity = self.get_min_quantity()
+        min_notional = self.get_min_notional()
+        
         # Calculate maximum position size based on current balance
         max_position_value = account_balance * self.max_position_size
-
+        
         # Calculate position size based on risk per trade
         risk_amount = account_balance * self.risk_per_trade
-
+        
         # Get ATR for dynamic stop loss and take profit
         latest_df = self.get_latest_data(lookback_candles=20)
-        atr = latest_df["ATR"].iloc[-1]
-
+        atr = latest_df['ATR'].iloc[-1]
+        
         if signal == 1:  # BUY signal
             # Use ATR for stop loss (2x ATR)
             self.stop_loss_pct = min(0.05, (2 * atr) / current_price)  # Cap at 5%
             # Use ATR for take profit (3x ATR)
             self.take_profit_pct = min(0.1, (3 * atr) / current_price)  # Cap at 10%
-
+            
             # Calculate position size based on risk
             position_size = (risk_amount / self.stop_loss_pct) / current_price
-
+            
             # Calculate stop loss and take profit prices
             self.stop_loss_price = current_price * (1 - self.stop_loss_pct)
             self.take_profit_price = current_price * (1 + self.take_profit_pct)
-
+            
         elif signal == -1:  # SELL signal
             # Use ATR for stop loss (2x ATR)
             self.stop_loss_pct = min(0.05, (2 * atr) / current_price)  # Cap at 5%
             # Use ATR for take profit (3x ATR)
             self.take_profit_pct = min(0.1, (3 * atr) / current_price)  # Cap at 10%
-
+            
             # Calculate position size based on risk
             position_size = (risk_amount / self.stop_loss_pct) / current_price
-
+            
             # Calculate stop loss and take profit prices
             self.stop_loss_price = current_price * (1 + self.stop_loss_pct)
             self.take_profit_price = current_price * (1 - self.take_profit_pct)
-
+        
         # Ensure position size doesn't exceed maximum allowed
         position_value = position_size * current_price
         if position_value > max_position_value:
             position_size = max_position_value / current_price
-
+        
+        # Format the position size with the correct precision using the direct method
+        position_size = float("{:0.0{}f}".format(position_size, quantity_precision))
+        
+        # Ensure position size meets minimum quantity requirement
+        if position_size < min_quantity:
+            print(f"Warning: Position size {position_size} is below minimum quantity {min_quantity}")
+            position_size = min_quantity
+        
+        # Ensure order value meets minimum notional requirement
+        order_value = position_size * current_price
+        if order_value < min_notional:
+            print(f"Warning: Order value ${order_value:.2f} is below minimum notional ${min_notional}")
+            # Calculate the minimum position size needed to meet the minimum notional value
+            min_position_size = min_notional / current_price
+            # Format to the correct precision
+            min_position_size = float("{:0.0{}f}".format(min_position_size, quantity_precision))
+            # Ensure it's at least the minimum quantity
+            min_position_size = max(min_position_size, min_quantity)
+            
+            print(f"Adjusting position size from {position_size} to {min_position_size} to meet minimum requirements")
+            position_size = min_position_size
+        
+        # Final check to ensure position size is greater than zero
+        if position_size <= 0:
+            print("Error: Position size is zero or negative. Cannot execute trade.")
+            return None
+        
         # Execute the trade
         try:
             if signal == 1:  # BUY signal
                 if not self.test_mode:
-                    # For futures trading - open long position
+                    # For futures trading - open long position at MARKET price (executes immediately at current market price)
+                    print(f"Opening LONG position at MARKET price for {position_size} {self.symbol}")
                     order = self.client.futures_create_order(
                         symbol=self.symbol,
-                        side="BUY",
-                        type="MARKET",
-                        quantity=position_size,
+                        side='BUY',
+                        type='MARKET',  # MARKET order type ensures execution at current market price
+                        quantity=position_size
                     )
+                    print(f"Order executed: {order}")
                 else:
                     # Test mode - simulate order
-                    print(f"TEST MODE: Simulating BUY order for {position_size:.6f} {self.symbol} at ${current_price:.2f}")
-
+                    print(f"TEST MODE: Simulating BUY order for {position_size} {self.symbol} at MARKET price (${current_price:.{price_precision}f})")
+                
                 # Update position tracking
-                self.position = "long"
+                self.position = 'long'
                 self.entry_price = current_price
                 self.position_size = position_size
                 self.entry_time = timestamp
-
+                
                 # Add to trade history
                 trade_record = {
-                    "timestamp": timestamp,
-                    "action": "BUY",
-                    "price": current_price,
-                    "size": position_size,
-                    "value": position_size * current_price,
-                    "stop_loss": self.stop_loss_price,
-                    "take_profit": self.take_profit_price,
+                    'timestamp': timestamp,
+                    'action': 'BUY',
+                    'price': current_price,
+                    'size': position_size,
+                    'value': position_size * current_price,
+                    'stop_loss': self.stop_loss_price,
+                    'take_profit': self.take_profit_price,
+                    'order_type': 'MARKET'  # Record that this was a market order
                 }
-
+                
                 self.trade_history.append(trade_record)
                 if self.test_mode:
                     self.test_trades.append(trade_record)
-
-                return f"BUY: Opened long position at ${current_price:.2f} with {position_size:.6f} units"
-
+                
+                return f"BUY: Opened long position at MARKET price (${current_price:.{price_precision}f}) with {position_size} units"
+                
             elif signal == -1:  # SELL signal
                 if not self.test_mode:
-                    # For futures trading - open short position
+                    # For futures trading - open short position at MARKET price (executes immediately at current market price)
+                    print(f"Opening SHORT position at MARKET price for {position_size} {self.symbol}")
                     order = self.client.futures_create_order(
                         symbol=self.symbol,
-                        side="SELL",
-                        type="MARKET",
-                        quantity=position_size,
+                        side='SELL',
+                        type='MARKET',  # MARKET order type ensures execution at current market price
+                        quantity=position_size
                     )
+                    print(f"Order executed: {order}")
                 else:
                     # Test mode - simulate order
-                    print(f"TEST MODE: Simulating SELL order for {position_size:.6f} {self.symbol} at ${current_price:.2f}")
-
+                    print(f"TEST MODE: Simulating SELL order for {position_size} {self.symbol} at MARKET price (${current_price:.{price_precision}f})")
+                
                 # Update position tracking
-                self.position = "short"
+                self.position = 'short'
                 self.entry_price = current_price
                 self.position_size = position_size
                 self.entry_time = timestamp
-
+                
                 # Add to trade history
                 trade_record = {
-                    "timestamp": timestamp,
-                    "action": "SELL",
-                    "price": current_price,
-                    "size": position_size,
-                    "value": position_size * current_price,
-                    "stop_loss": self.stop_loss_price,
-                    "take_profit": self.take_profit_price,
+                    'timestamp': timestamp,
+                    'action': 'SELL',
+                    'price': current_price,
+                    'size': position_size,
+                    'value': position_size * current_price,
+                    'stop_loss': self.stop_loss_price,
+                    'take_profit': self.take_profit_price,
+                    'order_type': 'MARKET'  # Record that this was a market order
                 }
-
+                
                 self.trade_history.append(trade_record)
                 if self.test_mode:
                     self.test_trades.append(trade_record)
-
-                return f"SELL: Opened short position at ${current_price:.2f} with {position_size:.6f} units"
-
+                
+                return f"SELL: Opened short position at MARKET price (${current_price:.{price_precision}f}) with {position_size} units"
+                
         except BinanceAPIException as e:
-            print(f"Error executing trade: {e}")
+            error_message = str(e)
+            print(f"Error executing trade: {error_message}")
+            
+            # Handle precision errors specifically
+            if "Precision is over the maximum defined for this asset" in error_message:
+                print("Precision error detected. Trying to adjust position size...")
+                
+                # Try to get futures precision directly
+                futures_info = self.get_futures_symbol_info()
+                if futures_info and 'quantityPrecision' in futures_info:
+                    adjusted_precision = futures_info['quantityPrecision']
+                    adjusted_position_size = float("{:0.0{}f}".format(position_size, adjusted_precision))
+                    print(f"Adjusted position size from {position_size} to {adjusted_position_size} using futures precision")
+                    
+                    # Ensure adjusted position size is greater than zero
+                    if adjusted_position_size <= 0:
+                        adjusted_position_size = float("{:0.0{}f}".format(min_quantity, adjusted_precision))
+                        print(f"Adjusted position size was zero, setting to minimum quantity: {adjusted_position_size}")
+                    
+                    # Try again with the adjusted position size
+                    if not self.test_mode:
+                        try:
+                            side = 'BUY' if signal == 1 else 'SELL'
+                            print(f"Retrying with adjusted position size: {adjusted_position_size}")
+                            order = self.client.futures_create_order(
+                                symbol=self.symbol,
+                                side=side,
+                                type='MARKET',
+                                quantity=adjusted_position_size
+                            )
+                            print(f"Order executed: {order}")
+                            
+                            # Update position tracking
+                            self.position = 'long' if signal == 1 else 'short'
+                            self.entry_price = current_price
+                            self.position_size = adjusted_position_size
+                            self.entry_time = timestamp
+                            
+                            # Add to trade history
+                            trade_record = {
+                                'timestamp': timestamp,
+                                'action': 'BUY' if signal == 1 else 'SELL',
+                                'price': current_price,
+                                'size': adjusted_position_size,
+                                'value': adjusted_position_size * current_price,
+                                'stop_loss': self.stop_loss_price,
+                                'take_profit': self.take_profit_price,
+                                'order_type': 'MARKET'
+                            }
+                            
+                            self.trade_history.append(trade_record)
+                            
+                            action = "BUY" if signal == 1 else "SELL"
+                            position_type = "long" if signal == 1 else "short"
+                            return f"{action}: Opened {position_type} position at MARKET price (${current_price:.{price_precision}f}) with {adjusted_position_size} units"
+                        except BinanceAPIException as retry_error:
+                            print(f"Error on retry: {retry_error}")
+                            return None
+                
+                # If in test mode, provide guidance
+                if self.test_mode:
+                    return f"TEST MODE: Precision error. Try increasing your investment amount or using a different trading pair."
+            
+            # Handle quantity errors specifically
+            elif "Quantity less than or equal to zero" in error_message:
+                print("Error: Position size is zero or negative. Trying with minimum quantity...")
+                
+                # Try with minimum quantity
+                min_valid_quantity = min_quantity
+                # Ensure it meets minimum notional requirement
+                if min_valid_quantity * current_price < min_notional:
+                    min_valid_quantity = min_notional / current_price
+                    min_valid_quantity = float("{:0.0{}f}".format(min_valid_quantity, quantity_precision))
+                
+                print(f"Retrying with minimum valid quantity: {min_valid_quantity}")
+                
+                if not self.test_mode:
+                    try:
+                        side = 'BUY' if signal == 1 else 'SELL'
+                        order = self.client.futures_create_order(
+                            symbol=self.symbol,
+                            side=side,
+                            type='MARKET',
+                            quantity=min_valid_quantity
+                        )
+                        print(f"Order executed: {order}")
+                        
+                        # Update position tracking
+                        self.position = 'long' if signal == 1 else 'short'
+                        self.entry_price = current_price
+                        self.position_size = min_valid_quantity
+                        self.entry_time = timestamp
+                        
+                        # Add to trade history
+                        trade_record = {
+                            'timestamp': timestamp,
+                            'action': 'BUY' if signal == 1 else 'SELL',
+                            'price': current_price,
+                            'size': min_valid_quantity,
+                            'value': min_valid_quantity * current_price,
+                            'stop_loss': self.stop_loss_price,
+                            'take_profit': self.take_profit_price,
+                            'order_type': 'MARKET'
+                        }
+                        
+                        self.trade_history.append(trade_record)
+                        
+                        action = "BUY" if signal == 1 else "SELL"
+                        position_type = "long" if signal == 1 else "short"
+                        return f"{action}: Opened {position_type} position at MARKET price (${current_price:.{price_precision}f}) with {min_valid_quantity} units"
+                    except BinanceAPIException as retry_error:
+                        print(f"Error on retry: {retry_error}")
+                        return None
+            
             return None
 
-    def close_position(self, current_price, timestamp, reason="manual"):
+    def close_position(self, current_price, timestamp, reason='manual'):
         """Close the current position"""
         if not self.has_open_position():
             return None
-
+        
         try:
+            # Get the correct precision for the quantity and price
+            quantity_precision = self.get_quantity_precision()
+            price_precision = self.get_price_precision()
+            
+            # Format the position size with the correct precision using the direct method
+            position_size = float("{:0.0{}f}".format(self.position_size, quantity_precision))
+            
             if not self.test_mode:
-                # For futures trading - close position
-                side = "SELL" if self.position == "long" else "BUY"
+                # For futures trading - close position at MARKET price (executes immediately at current market price)
+                side = 'SELL' if self.position == 'long' else 'BUY'
+                print(f"Closing {self.position.upper()} position at MARKET price for {position_size} {self.symbol}")
                 order = self.client.futures_create_order(
                     symbol=self.symbol,
                     side=side,
-                    type="MARKET",
-                    quantity=self.position_size,
+                    type='MARKET',  # MARKET order type ensures execution at current market price
+                    quantity=position_size
                 )
+                print(f"Order executed: {order}")
             else:
                 # Test mode - simulate order
-                side = "SELL" if self.position == "long" else "BUY"
-                print(f"TEST MODE: Simulating {side} order to close position for {self.position_size:.6f} {self.symbol} at ${current_price:.2f}")
-
+                side = 'SELL' if self.position == 'long' else 'BUY'
+                print(f"TEST MODE: Simulating {side} order to close {self.position} position for {position_size} {self.symbol} at MARKET price (${current_price:.{price_precision}f})")
+            
             # Calculate profit/loss
-            if self.position == "long":
-                profit = self.position_size * (current_price - self.entry_price)
+            if self.position == 'long':
+                profit = (current_price - self.entry_price) * self.position_size
+                profit_pct = (current_price - self.entry_price) / self.entry_price * 100
             else:  # short
-                profit = self.position_size * (self.entry_price - current_price)
-
-            # Update test balance in test mode
-            if self.test_mode:
-                self.test_balance += profit
-                print(f"TEST MODE: Balance updated to ${self.test_balance:.2f} (Profit/Loss: ${profit:.2f})")
-
+                profit = (self.entry_price - current_price) * self.position_size
+                profit_pct = (self.entry_price - current_price) / self.entry_price * 100
+            
             # Add to trade history
             close_record = {
-                "timestamp": timestamp,
-                "action": "CLOSE",
-                "price": current_price,
-                "size": self.position_size,
-                "value": self.position_size * current_price,
-                "profit": profit,
-                "reason": reason,
+                'timestamp': timestamp,
+                'action': 'CLOSE',
+                'price': current_price,
+                'size': self.position_size,
+                'value': self.position_size * current_price,
+                'profit': profit,
+                'profit_pct': profit_pct,
+                'reason': reason,
+                'order_type': 'MARKET'  # Record that this was a market order
             }
-
+            
             self.trade_history.append(close_record)
             if self.test_mode:
                 self.test_trades.append(close_record)
-
+            
+            # Send notification
+            message = (
+                f"🔔 Position closed: {reason}\n"
+                f"Symbol: {self.symbol}\n"
+                f"Type: {self.position.upper()}\n"
+                f"Entry: ${self.entry_price:.2f}\n"
+                f"Exit: ${current_price:.2f}\n"
+                f"Profit: ${profit:.2f} ({profit_pct:.2f}%)\n"
+                f"Balance: ${self.get_account_balance():.2f}"
+            )
+            self.send_notification(message)
+            
             # Reset position tracking
-            position_type = self.position
             self.position = None
             self.entry_price = None
-            self.position_size = 0
+            self.position_size = None
+            self.entry_time = None
             self.stop_loss_price = None
             self.take_profit_price = None
-
-            return {
-                "position": position_type,
-                "exit_price": current_price,
-                "profit": profit,
-                "reason": reason,
+            
+            # Return result
+            result = {
+                'profit': profit,
+                'profit_pct': profit_pct,
+                'reason': reason,
+                'order_type': 'MARKET'  # Include the order type in the result
             }
-
+            
+            return result
+            
         except BinanceAPIException as e:
-            print(f"Error closing position: {e}")
+            error_message = str(e)
+            print(f"Error closing position: {error_message}")
+            
+            # Handle precision errors specifically
+            if "Precision is over the maximum defined for this asset" in error_message:
+                print("Precision error detected when closing position. Trying to adjust position size...")
+                
+                # Try to get futures precision directly
+                futures_info = self.get_futures_symbol_info()
+                if futures_info and 'quantityPrecision' in futures_info:
+                    adjusted_precision = futures_info['quantityPrecision']
+                    adjusted_position_size = float("{:0.0{}f}".format(self.position_size, adjusted_precision))
+                    print(f"Adjusted position size from {self.position_size} to {adjusted_position_size} using futures precision")
+                    
+                    # Update position size and try again
+                    self.position_size = adjusted_position_size
+                    return self.close_position(current_price, timestamp, reason)
+            
             return None
 
     def save_trading_results(self):
@@ -744,7 +1057,7 @@ def run_real_trading(realtime_trader, duration_hours=24, update_interval_minutes
                         update_message = (
                             f"{emoji} POSITION UPDATE ({position_info['position'].upper()})\n"
                             f"Symbol: {realtime_trader.symbol}\n"
-                            f"Current Price: ${current_price:,.2f}\n"
+                            f"Current Price: ${position_info['current_price']:,.2f}\n"
                             f"Entry Price: ${position_info['entry_price']:,.2f}\n"
                             f"Unrealized P/L: ${profit_loss:,.2f} ({profit_pct:.2f}%)\n"
                             f"Stop Loss: ${position_info['stop_loss']:,.2f}\n"

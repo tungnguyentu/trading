@@ -1,2 +1,2 @@
-timestamp,action,price,size,value,stop_loss,take_profit
-2025-03-03 14:30:00,SELL,162.55,0.1537988311288834,25.0,166.58428571428573,156.49857142857147
+timestamp,action,price,size,value,stop_loss,take_profit,order_type
+2025-03-03 15:45:00,SELL,159.01,0.001,0.15900999999999998,164.54285714285714,150.7107142857143,MARKET

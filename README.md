@@ -10,6 +10,7 @@ This is a cryptocurrency trading bot that can run in both simulation mode and re
 - Technical analysis indicators (SMA, ATR)
 - Machine learning signal integration
 - Risk management (stop loss, take profit)
+- Market orders for immediate execution at current price
 - Telegram notifications
 - Detailed trade history and reporting
 
@@ -88,6 +89,61 @@ python run_realtime_trading.py --symbol BTCUSDT --investment 50 --leverage 15 --
 - Trading disabled automatically when daily loss limit is reached
 - Position size limited to a percentage of account balance
 - Risk per trade limited to a percentage of account balance
+- Automatic handling of asset precision requirements
+- Market orders for immediate execution at best available price
+
+## Troubleshooting
+
+### Precision Error
+
+If you encounter the error "Precision is over the maximum defined for this asset", it means the quantity precision is too high for the asset you're trading. This can happen when:
+
+1. Your investment amount is too small
+2. The risk per trade is too small
+3. The asset price is too high
+
+The bot now automatically handles precision requirements for each asset by:
+1. Retrieving the correct precision requirements from Binance
+2. Adjusting position sizes to meet minimum quantity requirements
+3. Ensuring orders meet minimum notional value requirements
+4. Automatically retrying with adjusted precision if an error occurs
+
+If you still encounter precision errors, try these solutions:
+- Increase your investment amount (use the `--investment` flag)
+- Try a different trading pair with a lower price
+- Run in test mode first to verify settings (`--test` flag)
+
+### Minimum Position Size Requirements
+
+Binance has minimum requirements for order sizes:
+
+1. **Minimum Quantity**: Each trading pair has a minimum quantity (e.g., 0.001 for SOLUSDT)
+2. **Minimum Notional Value**: The order value (quantity × price) must exceed a minimum amount (e.g., $10)
+
+If your calculated position size is too small, you might see errors like:
+- "Quantity less than or equal to zero"
+- "Order value is below minimum notional"
+
+The bot now automatically handles these requirements by:
+1. Checking if the calculated position size meets minimum requirements
+2. Adjusting the position size upward if needed
+3. Using the minimum valid quantity as a fallback
+
+For high-priced assets like SOLUSDT (>$150), we recommend:
+- Using an investment amount of at least $100
+- Setting leverage to 20x
+- Using a risk per trade of at least 2%
+
+### Other Common Issues
+
+#### API Key Permissions
+Make sure your Binance API key has the correct permissions:
+- Read permissions for market data
+- Trading permissions for executing orders
+- If using futures, ensure futures trading is enabled for your API key
+
+#### Network Issues
+If you encounter connection errors, check your internet connection and Binance API status.
 
 ## Results and Reporting
 
