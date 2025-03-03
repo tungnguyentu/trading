@@ -224,3 +224,60 @@ class MLManager:
             return 1, probability[1]  # Buy signal with probability
         else:
             return -1, probability[0]  # Sell signal with probability
+            
+    def predict(self, df):
+        """
+        Predict market direction using ML model
+        Returns a value between 0 and 1 indicating bullish probability
+        """
+        try:
+            # Get symbol from dataframe
+            symbol = df['symbol'].iloc[0]
+            
+            # Check if model exists in memory, try to load from disk if not
+            if symbol not in self.models or symbol not in self.scalers:
+                model, scaler = self.load_model(symbol)
+                
+                # If still not available, train a new model
+                if model is None or scaler is None:
+                    print(f"No trained model found for {symbol}, training now...")
+                    model, scaler = self.train_ml_model(symbol, df)
+                    
+                    # If training failed, return neutral prediction
+                    if model is None or scaler is None:
+                        print(f"Failed to train model for {symbol}")
+                        return 0.5  # Neutral prediction
+            
+            # Add features
+            df_features = self.add_features(df)
+            
+            # Get latest data point
+            latest_data = df_features.iloc[-1:]
+            
+            # Define features
+            feature_columns = [
+                'returns', 'log_returns', 
+                'sma_ratio_5', 'sma_ratio_10', 'sma_ratio_20', 'sma_ratio_50',
+                'atr_ratio', 'volume_ratio', 'rsi', 
+                'macd', 'macd_signal', 'macd_hist',
+                'bb_width', 'bb_position'
+            ]
+            
+            # Scale features
+            X = latest_data[feature_columns]
+            X_scaled = self.scalers[symbol].transform(X)
+            
+            # Predict
+            prediction = self.models[symbol].predict(X_scaled)[0]
+            probability = self.models[symbol].predict_proba(X_scaled)[0]
+            
+            # Return probability of upward movement (second class)
+            # For binary classification: True = bullish, False = bearish
+            if prediction:
+                return probability[1]  # Probability of bullish movement
+            else:
+                return 1 - probability[0]  # Convert bearish probability to bullish scale
+                
+        except Exception as e:
+            print(f"Error in ML prediction: {e}")
+            return 0.5  # Return neutral prediction on error

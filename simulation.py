@@ -14,17 +14,25 @@ from dotenv import load_dotenv
 load_dotenv()
 
 class TradingSimulator:
-    def __init__(self, historical_data, initial_investment=50.0, daily_profit_target=15.0, leverage=1):
+    def __init__(self, historical_data_or_symbol, initial_investment=50.0, daily_profit_target=15.0, leverage=1):
         """
         Initialize the trading simulator
         
         Args:
-            historical_data: DataFrame with historical price data
+            historical_data_or_symbol: DataFrame with historical price data or a symbol string
             initial_investment: Starting capital in USD
             daily_profit_target: Target profit per day in USD
             leverage: Margin trading leverage (default: 1 = no leverage)
         """
-        self.data = historical_data.copy()
+        # Check if historical_data is a DataFrame or a symbol string
+        if isinstance(historical_data_or_symbol, pd.DataFrame):
+            self.data = historical_data_or_symbol.copy()
+            self.symbol = self.data['symbol'].iloc[0] if 'symbol' in self.data.columns else 'SIMULATION'
+        else:
+            # It's a symbol string
+            self.data = pd.DataFrame()  # Empty DataFrame, will be populated later
+            self.symbol = historical_data_or_symbol
+            
         self.initial_investment = initial_investment
         self.current_balance = initial_investment
         self.daily_profit_target = daily_profit_target
@@ -35,6 +43,8 @@ class TradingSimulator:
         self.entry_price = None
         self.entry_time = None
         self.position_size = 0
+        self.stop_loss_price = None
+        self.take_profit_price = None
         
         # Performance tracking
         self.trades = []
@@ -143,7 +153,7 @@ class TradingSimulator:
                 # Send notification for opening long position
                 notification = (
                     f"🟢 BUY Signal for simulation\n"
-                    f"Symbol: {self.data['symbol'].iloc[0] if 'symbol' in self.data.columns else 'SIMULATION'}\n"
+                    f"Symbol: {self.symbol}\n"
                     f"Entry Price: ${price:.2f}\n"
                     f"Position Size: {self.position_size:.6f} units\n"
                     f"Leverage: {self.leverage}x\n"
@@ -158,7 +168,7 @@ class TradingSimulator:
                 # Send notification for opening short position
                 notification = (
                     f"🔴 SELL Signal for simulation\n"
-                    f"Symbol: {self.data['symbol'].iloc[0] if 'symbol' in self.data.columns else 'SIMULATION'}\n"
+                    f"Symbol: {self.symbol}\n"
                     f"Entry Price: ${price:.2f}\n"
                     f"Position Size: {self.position_size:.6f} units\n"
                     f"Leverage: {self.leverage}x\n"
@@ -192,8 +202,6 @@ class TradingSimulator:
         if not self.position or not self.entry_price:
             return None
             
-        price_change_pct = (price - self.entry_price) / self.entry_price
-        
         # For long positions
         if self.position == 'long':
             # Check daily profit target
@@ -201,8 +209,8 @@ class TradingSimulator:
             day_key = timestamp.strftime('%Y-%m-%d')
             day_profit = self.daily_profits.get(day_key, 0) + current_profit
             
-            # Take profit if daily target reached or regular take profit hit
-            if day_profit >= self.daily_profit_target or price_change_pct >= self.take_profit_pct:
+            # Take profit if daily target reached or price hits take profit level
+            if day_profit >= self.daily_profit_target or (self.take_profit_price and price >= self.take_profit_price):
                 profit = self.position_size * (price - self.entry_price)
                 self.current_balance += profit
                 reason = 'daily_target' if day_profit >= self.daily_profit_target else 'take_profit'
@@ -212,9 +220,9 @@ class TradingSimulator:
                 # Always send notification for take profit
                 notification = (
                     f"💰 TAKE PROFIT (LONG) for simulation\n"
-                    f"Symbol: {self.data['symbol'].iloc[0] if 'symbol' in self.data.columns else 'SIMULATION'}\n"
+                    f"Symbol: {self.symbol}\n"
                     f"Exit Price: ${price:.2f}\n"
-                    f"Profit: ${profit:.2f} ({price_change_pct:.2%})\n"
+                    f"Profit: ${profit:.2f} ({(price - self.entry_price) / self.entry_price:.2%})\n"
                     f"Reason: {'Daily Target Met' if reason == 'daily_target' else 'Take Profit Level'}\n"
                     f"Balance: ${self.current_balance:.2f}"
                 )
@@ -223,10 +231,12 @@ class TradingSimulator:
                 self.position = None
                 self.entry_price = None
                 self.position_size = 0
+                self.stop_loss_price = None
+                self.take_profit_price = None
                 return f"TAKE PROFIT (LONG): Closed at ${price:.2f}, Profit: ${profit:.2f}"
                 
             # Stop loss
-            elif price_change_pct <= -self.stop_loss_pct:
+            elif self.stop_loss_price and price <= self.stop_loss_price:
                 profit = self.position_size * (price - self.entry_price)
                 self.current_balance += profit
                 self.record_trade('long', self.entry_price, price, 
@@ -235,9 +245,9 @@ class TradingSimulator:
                 # Send notification for stop loss
                 notification = (
                     f"🛑 STOP LOSS (LONG) for simulation\n"
-                    f"Symbol: {self.data['symbol'].iloc[0] if 'symbol' in self.data.columns else 'SIMULATION'}\n"
+                    f"Symbol: {self.symbol}\n"
                     f"Exit Price: ${price:.2f}\n"
-                    f"Loss: ${profit:.2f} ({price_change_pct:.2%})\n"
+                    f"Loss: ${profit:.2f} ({(price - self.entry_price) / self.entry_price:.2%})\n"
                     f"Balance: ${self.current_balance:.2f}"
                 )
                 self.send_notification(notification)
@@ -245,35 +255,65 @@ class TradingSimulator:
                 self.position = None
                 self.entry_price = None
                 self.position_size = 0
+                self.stop_loss_price = None
+                self.take_profit_price = None
                 return f"STOP LOSS (LONG): Closed at ${price:.2f}, Loss: ${profit:.2f}"
         
-        # For short positions - similar changes with notifications
+        # For short positions
         elif self.position == 'short':
             # Check daily profit target
             current_profit = self.position_size * (self.entry_price - price)
             day_key = timestamp.strftime('%Y-%m-%d')
             day_profit = self.daily_profits.get(day_key, 0) + current_profit
             
-            # Take profit if daily target reached or regular take profit hit
-            if day_profit >= self.daily_profit_target or price_change_pct <= -self.take_profit_pct:
+            # Take profit if daily target reached or price hits take profit level
+            if day_profit >= self.daily_profit_target or (self.take_profit_price and price <= self.take_profit_price):
                 profit = self.position_size * (self.entry_price - price)
                 self.current_balance += profit
+                reason = 'daily_target' if day_profit >= self.daily_profit_target else 'take_profit'
                 self.record_trade('short', self.entry_price, price, 
-                                 self.entry_time, timestamp, profit, 'take_profit')
+                                 self.entry_time, timestamp, profit, reason)
+                
+                # Send notification for take profit
+                notification = (
+                    f"💰 TAKE PROFIT (SHORT) for simulation\n"
+                    f"Symbol: {self.symbol}\n"
+                    f"Exit Price: ${price:.2f}\n"
+                    f"Profit: ${profit:.2f} ({(self.entry_price - price) / self.entry_price:.2%})\n"
+                    f"Reason: {'Daily Target Met' if reason == 'daily_target' else 'Take Profit Level'}\n"
+                    f"Balance: ${self.current_balance:.2f}"
+                )
+                self.send_notification(notification)
+                
                 self.position = None
                 self.entry_price = None
                 self.position_size = 0
+                self.stop_loss_price = None
+                self.take_profit_price = None
                 return f"TAKE PROFIT (SHORT): Closed at ${price:.2f}, Profit: ${profit:.2f}"
                 
             # Stop loss
-            elif price_change_pct >= self.stop_loss_pct:
+            elif self.stop_loss_price and price >= self.stop_loss_price:
                 profit = self.position_size * (self.entry_price - price)
                 self.current_balance += profit
                 self.record_trade('short', self.entry_price, price, 
                                  self.entry_time, timestamp, profit, 'stop_loss')
+                
+                # Send notification for stop loss
+                notification = (
+                    f"🛑 STOP LOSS (SHORT) for simulation\n"
+                    f"Symbol: {self.symbol}\n"
+                    f"Exit Price: ${price:.2f}\n"
+                    f"Loss: ${profit:.2f} ({(self.entry_price - price) / self.entry_price:.2%})\n"
+                    f"Balance: ${self.current_balance:.2f}"
+                )
+                self.send_notification(notification)
+                
                 self.position = None
                 self.entry_price = None
                 self.position_size = 0
+                self.stop_loss_price = None
+                self.take_profit_price = None
                 return f"STOP LOSS (SHORT): Closed at ${price:.2f}, Loss: ${profit:.2f}"
                 
         return None
@@ -507,3 +547,62 @@ class TradingSimulator:
         
         # Save summary to CSV
         pd.DataFrame([summary]).to_csv(f"{self.results_dir}/summary.csv", index=False)
+        
+    def open_long_position(self, price, position_size, stop_loss_price, take_profit_price, timestamp):
+        """Open a long position"""
+        # Don't open if we already have a position
+        if self.position:
+            return False
+            
+        self.position = 'long'
+        self.entry_price = price
+        self.position_size = position_size
+        self.entry_time = timestamp
+        self.stop_loss_price = stop_loss_price
+        self.take_profit_price = take_profit_price
+        
+        return True
+    
+    def open_short_position(self, price, position_size, stop_loss_price, take_profit_price, timestamp):
+        """Open a short position"""
+        # Don't open if we already have a position
+        if self.position:
+            return False
+            
+        self.position = 'short'
+        self.entry_price = price
+        self.position_size = position_size
+        self.entry_time = timestamp
+        self.stop_loss_price = stop_loss_price
+        self.take_profit_price = take_profit_price
+        
+        return True
+    
+    def close_position(self, price, timestamp, reason='manual'):
+        """Close the current position"""
+        if not self.position:
+            return None
+            
+        if self.position == 'long':
+            profit = self.position_size * (price - self.entry_price)
+        else:  # short
+            profit = self.position_size * (self.entry_price - price)
+            
+        self.current_balance += profit
+        self.record_trade(self.position, self.entry_price, price, self.entry_time, timestamp, profit, reason)
+        
+        result = {
+            'position': self.position,
+            'entry_price': self.entry_price,
+            'exit_price': price,
+            'profit': profit,
+            'reason': reason
+        }
+        
+        self.position = None
+        self.entry_price = None
+        self.position_size = 0
+        self.stop_loss_price = None
+        self.take_profit_price = None
+        
+        return result

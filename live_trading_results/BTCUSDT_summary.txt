@@ -1,0 +1,8 @@
+=== LIVE TRADING SUMMARY ===
+Symbol: BTCUSDT
+Initial Investment: $50.00
+Current Balance: $50.00
+Profit/Loss: $0.00
+Return: 0.00%
+Total Trades: 0
+Generated: 2025-03-03 17:00:27
