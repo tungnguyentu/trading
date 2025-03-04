@@ -37,6 +37,8 @@ def main():
         "--leverage", type=int, default=15, help="Margin trading leverage (15-20x)"
     )
     parser.add_argument("--test", action="store_true", help="Run in test mode with fake balance")
+    parser.add_argument("--full-investment", action="store_true", help="Use full investment amount for each trade (higher risk)")
+    parser.add_argument("--full-margin", action="store_true", help="Use full investment amount as margin (EXTREME RISK)")
 
     args = parser.parse_args()
 
@@ -59,6 +61,11 @@ def main():
         print(f"Leverage: {args.leverage}x")
         print(f"Duration: {args.hours} hours")
         print(f"Update Interval: {args.interval} minutes")
+        if args.full_margin:
+            print("⚠️ EXTREME RISK: Using FULL MARGIN mode - Your entire investment will be used as margin!")
+            print("⚠️ This mode can lead to rapid liquidation of your position!")
+        elif args.full_investment:
+            print("CAUTION: Using FULL INVESTMENT mode - HIGHER RISK!")
         print("=" * 80)
 
         confirmation = input(
@@ -76,6 +83,11 @@ def main():
         print(f"Leverage: {args.leverage}x")
         print(f"Duration: {args.hours} hours")
         print(f"Update Interval: {args.interval} minutes")
+        if args.full_margin:
+            print("⚠️ EXTREME RISK: Using FULL MARGIN mode - Your entire investment will be used as margin!")
+            print("⚠️ This mode can lead to rapid liquidation of your position!")
+        elif args.full_investment:
+            print("CAUTION: Using FULL INVESTMENT mode - HIGHER RISK!")
         print("=" * 80)
 
     # Initialize real-time trader
@@ -84,7 +96,9 @@ def main():
         initial_investment=args.investment,
         daily_profit_target=args.target,
         leverage=args.leverage,
-        test_mode=args.test
+        test_mode=args.test,
+        use_full_investment=args.full_investment,
+        use_full_margin=args.full_margin
     )
 
     # Run real-time trading

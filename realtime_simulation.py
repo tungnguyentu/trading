@@ -166,6 +166,7 @@ class RealtimeSimulator:
             print(f"Telegram notification sent: {message}")
         except Exception as e:
             print(f"Error sending Telegram notification: {e}")
+
     def check_take_profit_stop_loss(self, current_price, timestamp):
         """Check for take profit or stop loss with risk management"""
         import re

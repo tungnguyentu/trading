@@ -31,6 +31,8 @@ class RealtimeTrader:
         daily_profit_target=15.0,
         leverage=15,
         test_mode=False,
+        use_full_investment=False,
+        use_full_margin=False,
     ):
         """
         Initialize the real-time trader
@@ -41,11 +43,15 @@ class RealtimeTrader:
             daily_profit_target: Target profit per day in USD
             leverage: Margin trading leverage (15x-20x)
             test_mode: If True, run in test mode with fake balance
+            use_full_investment: If True, use full investment for position size
+            use_full_margin: If True, use full investment as margin (very high risk)
         """
         self.symbol = symbol
         self.initial_investment = initial_investment
         self.daily_profit_target = daily_profit_target
         self.test_mode = test_mode
+        self.use_full_investment = use_full_investment
+        self.use_full_margin = use_full_margin
 
         # Set leverage (constrain between 15x and 20x)
         self.leverage = max(15, min(20, leverage))
@@ -67,9 +73,9 @@ class RealtimeTrader:
         self.atr_period = 14
 
         # Risk management parameters
-        self.max_position_size = 0.5  # Maximum 50% of balance for any single trade
+        self.max_position_size = 0.95 if use_full_investment else 0.2  # Use 95% of balance if full investment mode
         self.max_daily_loss = 0.1  # Maximum 10% daily loss of initial investment
-        self.risk_per_trade = 0.02  # Risk 2% of balance per trade
+        self.risk_per_trade = 0.95 if use_full_investment else 0.02  # Use 95% of balance for risk if full investment mode
         self.daily_loss = 0
         self.trading_disabled = False
         self.last_reset_day = datetime.now().date()
@@ -81,8 +87,8 @@ class RealtimeTrader:
         self.stop_loss_price = None
         self.take_profit_price = None
         self.entry_time = None
-        self.stop_loss_pct = 0.05  # Default 5%
-        self.take_profit_pct = 0.1  # Default 10%
+        self.stop_loss_pct = 0.02  # Default 2%
+        self.take_profit_pct = 0.04  # Default 4%
 
         # Test mode variables
         if self.test_mode:
@@ -193,8 +199,10 @@ class RealtimeTrader:
 
             # No open position
             self.position = None
-            self.position_size = 0
+            self.position_size = 0  # Set to 0 instead of None
             self.entry_price = None
+            self.stop_loss_price = None  # Ensure stop_loss_price is reset
+            self.take_profit_price = None  # Ensure take_profit_price is reset
             return False
         except BinanceAPIException as e:
             print(f"Error checking open position: {e}")
@@ -206,6 +214,9 @@ class RealtimeTrader:
             return None
 
         current_price = self.get_current_price()
+        if current_price == 0.0 or self.entry_price is None or self.position_size == 0:
+            return None
+            
         position_value = self.position_size * current_price
         profit_loss = 0
         profit_pct = 0
@@ -244,16 +255,16 @@ class RealtimeTrader:
 
         result = None
 
-        # Check for take profit
-        if self.position == "long" and current_price >= self.take_profit_price:
+        # Check for take profit (with null check)
+        if self.position == "long" and self.take_profit_price is not None and current_price >= self.take_profit_price:
             result = self.close_position(current_price, timestamp, "TAKE PROFIT")
-        elif self.position == "short" and current_price <= self.take_profit_price:
+        elif self.position == "short" and self.take_profit_price is not None and current_price <= self.take_profit_price:
             result = self.close_position(current_price, timestamp, "TAKE PROFIT")
 
-        # Check for stop loss
-        elif self.position == "long" and current_price <= self.stop_loss_price:
+        # Check for stop loss (with null check)
+        elif self.position == "long" and self.stop_loss_price is not None and current_price <= self.stop_loss_price:
             result = self.close_position(current_price, timestamp, "STOP LOSS")
-        elif self.position == "short" and current_price >= self.stop_loss_price:
+        elif self.position == "short" and self.stop_loss_price is not None and current_price >= self.stop_loss_price:
             result = self.close_position(current_price, timestamp, "STOP LOSS")
 
         if result:
@@ -440,46 +451,58 @@ class RealtimeTrader:
         min_quantity = self.get_min_quantity()
         min_notional = self.get_min_notional()
         
-        # Calculate maximum position size based on current balance
-        max_position_value = account_balance * self.max_position_size
-        
-        # Calculate position size based on risk per trade
-        risk_amount = account_balance * self.risk_per_trade
-        
-        # Get ATR for dynamic stop loss and take profit
-        latest_df = self.get_latest_data(lookback_candles=20)
-        atr = latest_df['ATR'].iloc[-1]
-        
-        if signal == 1:  # BUY signal
-            # Use ATR for stop loss (2x ATR)
-            self.stop_loss_pct = min(0.05, (2 * atr) / current_price)  # Cap at 5%
-            # Use ATR for take profit (3x ATR)
-            self.take_profit_pct = min(0.1, (3 * atr) / current_price)  # Cap at 10%
+        # Calculate position size based on full investment, full margin, or risk management
+        if self.use_full_margin:
+            # Calculate position size to use full investment as margin
+            # Formula: position_size = (investment * leverage) / current_price
+            position_size = (self.initial_investment * self.leverage) / current_price
+            print(f"Using FULL MARGIN mode: {self.initial_investment:.2f} USD as margin")
+            print(f"Controlling position worth: {self.initial_investment * self.leverage:.2f} USD")
+        elif self.use_full_investment:
+            # Use almost full balance for position size (95% to leave room for fees)
+            position_size = (account_balance * 0.95) / current_price
+            print(f"Using full investment mode: {account_balance * 0.95:.2f} USD for position")
+        else:
+            # Calculate maximum position size based on current balance
+            max_position_value = account_balance * self.max_position_size
             
-            # Calculate position size based on risk
-            position_size = (risk_amount / self.stop_loss_pct) / current_price
+            # Calculate position size based on risk per trade
+            risk_amount = account_balance * self.risk_per_trade
             
-            # Calculate stop loss and take profit prices
-            self.stop_loss_price = current_price * (1 - self.stop_loss_pct)
-            self.take_profit_price = current_price * (1 + self.take_profit_pct)
+            # Get ATR for dynamic stop loss and take profit
+            latest_df = self.get_latest_data(lookback_candles=20)
+            atr = latest_df['ATR'].iloc[-1]
             
-        elif signal == -1:  # SELL signal
-            # Use ATR for stop loss (2x ATR)
-            self.stop_loss_pct = min(0.05, (2 * atr) / current_price)  # Cap at 5%
-            # Use ATR for take profit (3x ATR)
-            self.take_profit_pct = min(0.1, (3 * atr) / current_price)  # Cap at 10%
+            if signal == 1:  # BUY signal
+                # Use ATR for stop loss (2x ATR)
+                self.stop_loss_pct = min(0.05, (2 * atr) / current_price)  # Cap at 5%
+                # Use ATR for take profit (3x ATR)
+                self.take_profit_pct = min(0.1, (3 * atr) / current_price)  # Cap at 10%
+                
+                # Calculate position size based on risk
+                position_size = (risk_amount / self.stop_loss_pct) / current_price
+                
+                # Calculate stop loss and take profit prices
+                self.stop_loss_price = current_price * (1 - self.stop_loss_pct)
+                self.take_profit_price = current_price * (1 + self.take_profit_pct)
+                
+            elif signal == -1:  # SELL signal
+                # Use ATR for stop loss (2x ATR)
+                self.stop_loss_pct = min(0.05, (2 * atr) / current_price)  # Cap at 5%
+                # Use ATR for take profit (3x ATR)
+                self.take_profit_pct = min(0.1, (3 * atr) / current_price)  # Cap at 10%
+                
+                # Calculate position size based on risk
+                position_size = (risk_amount / self.stop_loss_pct) / current_price
+                
+                # Calculate stop loss and take profit prices
+                self.stop_loss_price = current_price * (1 + self.stop_loss_pct)
+                self.take_profit_price = current_price * (1 - self.take_profit_pct)
             
-            # Calculate position size based on risk
-            position_size = (risk_amount / self.stop_loss_pct) / current_price
-            
-            # Calculate stop loss and take profit prices
-            self.stop_loss_price = current_price * (1 + self.stop_loss_pct)
-            self.take_profit_price = current_price * (1 - self.take_profit_pct)
-        
-        # Ensure position size doesn't exceed maximum allowed
-        position_value = position_size * current_price
-        if position_value > max_position_value:
-            position_size = max_position_value / current_price
+            # Ensure position size doesn't exceed maximum allowed
+            position_value = position_size * current_price
+            if position_value > max_position_value:
+                position_size = max_position_value / current_price
         
         # Format the position size with the correct precision using the direct method
         position_size = float("{:0.0{}f}".format(position_size, quantity_precision))
@@ -774,7 +797,7 @@ class RealtimeTrader:
             # Reset position tracking
             self.position = None
             self.entry_price = None
-            self.position_size = None
+            self.position_size = 0  # Set to 0 instead of None
             self.entry_time = None
             self.stop_loss_price = None
             self.take_profit_price = None
@@ -1060,10 +1083,12 @@ def run_real_trading(realtime_trader, duration_hours=24, update_interval_minutes
                             f"Current Price: ${position_info['current_price']:,.2f}\n"
                             f"Entry Price: ${position_info['entry_price']:,.2f}\n"
                             f"Unrealized P/L: ${profit_loss:,.2f} ({profit_pct:.2f}%)\n"
-                            f"Stop Loss: ${position_info['stop_loss']:,.2f}\n"
-                            f"Take Profit: ${position_info['take_profit']:,.2f}"
+                            f"Stop Loss: ${position_info['stop_loss'] if position_info['stop_loss'] is not None else 'N/A':,.2f}\n"
+                            f"Take Profit: ${position_info['take_profit'] if position_info['take_profit'] is not None else 'N/A':,.2f}"
                         )
                         realtime_trader.send_notification(update_message)
+                else:
+                    print("Position info not available, will retry next update")
 
             # Save results
             realtime_trader.save_trading_results()

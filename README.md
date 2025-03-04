@@ -67,6 +67,16 @@ To run in real trading mode:
 python run_realtime_trading.py --symbol BTCUSDT --investment 50 --leverage 15 --hours 24 --interval 15
 ```
 
+### Full Margin Mode (EXTREME RISK)
+
+To run in full margin mode (where your entire investment is used as margin):
+
+```
+python run_realtime_trading.py --symbol SOLUSDT --investment 50 --leverage 20 --hours 24 --interval 15 --full-margin
+```
+
+This mode will use your entire $50 as margin, controlling a position worth $1,000 (with 20x leverage). The margin shown in Binance will be $50.
+
 ### Command Line Arguments
 
 - `--symbol`: Trading pair (default: BTCUSDT)
@@ -76,10 +86,16 @@ python run_realtime_trading.py --symbol BTCUSDT --investment 50 --leverage 15 --
 - `--interval`: Update interval in minutes (default: 15)
 - `--leverage`: Margin trading leverage (default: 15, range: 15-20)
 - `--test`: Run in test mode with fake balance (no real trades)
+- `--full-investment`: Use full investment amount for each trade (higher risk)
+- `--full-margin`: Use full investment amount as margin (EXTREME RISK)
 
 ## Risk Warning
 
 **IMPORTANT**: This bot trades with real money when in real trading mode. Use at your own risk. The authors are not responsible for any financial losses incurred from using this software.
+
+**EXTRA CAUTION**: The `--full-investment` flag makes the bot use your entire investment amount for each trade. This significantly increases risk and could lead to losing your entire investment quickly. Only use this option if you fully understand the risks involved.
+
+**EXTREME RISK WARNING**: The `--full-margin` flag makes the bot use your entire investment amount as margin. This means your entire investment will be at risk of liquidation. With 20x leverage, a mere 5% price movement against your position will result in complete loss of your investment. Only use this option if you fully understand and accept the extreme risks involved.
 
 ## Safety Features
 
@@ -133,6 +149,20 @@ For high-priced assets like SOLUSDT (>$150), we recommend:
 - Using an investment amount of at least $100
 - Setting leverage to 20x
 - Using a risk per trade of at least 2%
+- Alternatively, use the `--full-investment` flag to use your entire investment amount (with higher risk)
+
+### Trading with Small Investment Amounts
+
+If you have a small investment amount (e.g., $50), you have several options:
+
+1. **Use Lower-Priced Assets**: Trading pairs like DOGEUSDT or XRPUSDT work better with small investments
+2. **Use the Full Investment Mode**: Add the `--full-investment` flag to use your entire investment for each trade:
+   ```
+   python run_realtime_trading.py --symbol ADAUSDT --investment 50 --leverage 20 --full-investment --test
+   ```
+3. **Increase Leverage**: Use the maximum allowed leverage (20x) to maximize your trading power
+
+**Note**: Using the `--full-investment` flag significantly increases risk as you're using your entire investment for each trade. Always test first with the `--test` flag before using real money.
 
 ### Other Common Issues
 
