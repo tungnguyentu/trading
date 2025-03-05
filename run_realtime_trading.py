@@ -44,6 +44,7 @@ def main():
     # Add new advanced strategy arguments
     parser.add_argument("--enhanced-signals", action="store_true", help="Use enhanced signal generation with multiple indicators")
     parser.add_argument("--signal-threshold", type=int, default=2, help="Number of indicators required to confirm a signal (1-8)")
+    parser.add_argument("--signal-cooldown", type=int, default=15, help="Minimum time between signals in minutes (5-60)")
     parser.add_argument("--trend-following", action="store_true", help="Only trade in the direction of the overall market trend")
     parser.add_argument("--pyramiding", action="store_true", help="Enable pyramiding (adding to winning positions)")
     parser.add_argument("--pyramid-entries", type=int, default=2, help="Maximum number of pyramid entries (1-5)")
@@ -80,6 +81,7 @@ def main():
             print("📈 Compound interest enabled - Position sizes will increase as profits grow")
         if args.enhanced_signals:
             print(f"🎯 Enhanced signals enabled - Requiring {args.signal_threshold} confirming indicators")
+            print(f"⏱️ Signal cooldown set to {args.signal_cooldown} minutes between trades")
         if args.trend_following:
             print("📊 Trend following enabled - Only trading with the market trend")
         if args.pyramiding:
@@ -112,6 +114,7 @@ def main():
             print("📈 Compound interest enabled - Position sizes will increase as profits grow")
         if args.enhanced_signals:
             print(f"🎯 Enhanced signals enabled - Requiring {args.signal_threshold} confirming indicators")
+            print(f"⏱️ Signal cooldown set to {args.signal_cooldown} minutes between trades")
         if args.trend_following:
             print("📊 Trend following enabled - Only trading with the market trend")
         if args.pyramiding:
@@ -136,7 +139,8 @@ def main():
         use_dynamic_take_profit=args.dynamic_tp,
         trend_following_mode=args.trend_following,
         use_enhanced_signals=args.enhanced_signals,
-        signal_confirmation_threshold=args.signal_threshold
+        signal_confirmation_threshold=args.signal_threshold,
+        signal_cooldown_minutes=args.signal_cooldown
     )
     # Run real-time trading
     try:

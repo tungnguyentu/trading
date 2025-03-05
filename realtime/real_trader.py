@@ -41,26 +41,28 @@ class RealtimeTrader:
         trend_following_mode=False,
         use_enhanced_signals=False,
         signal_confirmation_threshold=2,
+        signal_cooldown_minutes=15,
     ):
         """
-        Initialize the RealtimeTrader
-
+        Initialize the RealtimeTrader with configuration parameters
+        
         Args:
-            symbol: Trading symbol (e.g., BTCUSDT)
+            symbol: Trading pair symbol (e.g., "BTCUSDT")
             initial_investment: Initial investment amount in USD
             daily_profit_target: Daily profit target in USD
-            leverage: Leverage to use for trading
-            test_mode: Whether to run in test mode (no real trades)
-            use_full_investment: Whether to use the full investment amount
-            use_full_margin: Whether to use the full margin available
-            compound_interest: Whether to compound interest
-            enable_pyramiding: Whether to enable pyramiding (adding to winning positions)
-            max_pyramid_entries: Maximum number of pyramid entries
-            pyramid_threshold_pct: Minimum profit percentage before adding to position
-            use_dynamic_take_profit: Whether to use dynamic take profit targets
-            trend_following_mode: Whether to use trend following mode
-            use_enhanced_signals: Whether to use enhanced signal generation
-            signal_confirmation_threshold: Minimum number of indicators confirming a signal
+            leverage: Leverage for margin trading (1-20x)
+            test_mode: If True, run in test mode with fake balance
+            use_full_investment: If True, use full investment amount for each trade
+            use_full_margin: If True, use full investment as margin (high risk)
+            compound_interest: If True, reinvest profits to increase position sizes
+            enable_pyramiding: If True, allow adding to winning positions
+            max_pyramid_entries: Maximum number of pyramid entries allowed
+            pyramid_threshold_pct: Profit percentage required before pyramiding
+            use_dynamic_take_profit: If True, adjust take profit based on volatility
+            trend_following_mode: If True, only trade in direction of market trend
+            use_enhanced_signals: If True, use multiple indicators for signal confirmation
+            signal_confirmation_threshold: Number of indicators required to confirm a signal
+            signal_cooldown_minutes: Minimum time between signals in minutes
         """
         # Trading parameters
         self.symbol = symbol
@@ -90,7 +92,7 @@ class RealtimeTrader:
         self.use_enhanced_signals = use_enhanced_signals
         self.signal_confirmation_threshold = signal_confirmation_threshold
         self.last_signal_time = None
-        self.signal_cooldown_minutes = 60  # Minimum time between signals
+        self.signal_cooldown_minutes = signal_cooldown_minutes  # Minimum time between signals
         
         # Add per-symbol balance tracking for compound interest
         self.symbol_balance = initial_investment
@@ -114,11 +116,14 @@ class RealtimeTrader:
         self.short_window = 20
         self.long_window = 50
         self.atr_period = 14
+        self.atr_multiplier = 1.5  # Multiplier for ATR-based stop loss
 
         # Risk management parameters
         self.max_position_size = 0.95 if use_full_investment else 0.2  # Use 95% of balance if full investment mode
         self.max_daily_loss = 0.1  # Maximum 10% daily loss of initial investment
-        self.risk_per_trade = 0.95 if use_full_investment else 0.02  # Use 95% of balance for risk if full investment mode
+        self.risk_pct = 0.02  # Default risk per trade (2% of account balance)
+        self.risk_per_trade = 0.02  # Risk 2% of balance per trade (used in execute_trade)
+        self.use_atr_for_risk = True  # Use ATR for stop loss calculation
         self.daily_loss = 0
         self.trading_disabled = False
         self.last_reset_day = datetime.now().date()
@@ -1230,7 +1235,15 @@ class RealtimeTrader:
             signal: 1 for long, -1 for short, 0 for no signal
             confidence: 0-100 scale where 100 is highest confidence
         """
+        print("\n========== ENHANCED SIGNAL ANALYSIS START ==========")
+        print(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"Symbol: {self.symbol}")
+        print(f"Current Price: ${latest_df.iloc[-1]['close']:.4f}")
+        print(f"Signal Threshold: {self.signal_confirmation_threshold} indicators required")
+        
         if latest_df is None or len(latest_df) < 50:
+            print("DEBUG: Not enough data for signal analysis (need at least 50 candles)")
+            print("========== ENHANCED SIGNAL ANALYSIS END ==========\n")
             return (0, 0)  # No signal if not enough data
             
         # Get the latest candle
@@ -1241,8 +1254,99 @@ class RealtimeTrader:
         short_signals = 0
         total_indicators = 0
         
+        # Debug: Print available columns for troubleshooting
+        print(f"DEBUG: Available indicators: {', '.join(latest_df.columns)}")
+        
+        # Calculate missing indicators if needed
+        print("\n--- Calculating Missing Indicators ---")
+        df = latest_df.copy()
+        
+        # Calculate EMAs if missing
+        if 'ema_8' not in df.columns or 'ema_21' not in df.columns:
+            print("DEBUG: Calculating EMAs on the fly")
+            if 'ema_8' not in df.columns:
+                df['ema_8'] = df['close'].ewm(span=8, adjust=False).mean()
+            if 'ema_21' not in df.columns:
+                df['ema_21'] = df['close'].ewm(span=21, adjust=False).mean()
+        
+        # Calculate RSI if missing
+        if 'rsi' not in df.columns:
+            print("DEBUG: Calculating RSI on the fly")
+            delta = df['close'].diff()
+            gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+            loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+            rs = gain / loss
+            df['rsi'] = 100 - (100 / (1 + rs))
+        
+        # Calculate MACD if missing
+        if 'macd' not in df.columns or 'macd_signal' not in df.columns:
+            print("DEBUG: Calculating MACD on the fly")
+            ema_12 = df['close'].ewm(span=12, adjust=False).mean()
+            ema_26 = df['close'].ewm(span=26, adjust=False).mean()
+            df['macd'] = ema_12 - ema_26
+            df['macd_signal'] = df['macd'].ewm(span=9, adjust=False).mean()
+        
+        # Calculate Bollinger Bands if missing
+        if 'bb_upper' not in df.columns or 'bb_lower' not in df.columns:
+            print("DEBUG: Calculating Bollinger Bands on the fly")
+            window = 20
+            std_dev = 2
+            rolling_mean = df['close'].rolling(window=window).mean()
+            rolling_std = df['close'].rolling(window=window).std()
+            df['bb_upper'] = rolling_mean + (rolling_std * std_dev)
+            df['bb_lower'] = rolling_mean - (rolling_std * std_dev)
+            df['bb_middle'] = rolling_mean
+        
+        # Calculate Stochastic Oscillator if missing
+        if 'stoch_k' not in df.columns or 'stoch_d' not in df.columns:
+            print("DEBUG: Calculating Stochastic Oscillator on the fly")
+            window = 14
+            k_window = 3
+            d_window = 3
+            # Calculate %K
+            low_min = df['low'].rolling(window=window).min()
+            high_max = df['high'].rolling(window=window).max()
+            df['stoch_k'] = 100 * ((df['close'] - low_min) / (high_max - low_min))
+            # Calculate %D
+            df['stoch_d'] = df['stoch_k'].rolling(window=d_window).mean()
+        
+        # Calculate ADX if missing
+        if 'adx' not in df.columns:
+            print("DEBUG: Calculating ADX on the fly")
+            window = 14
+            # True Range
+            df['tr1'] = abs(df['high'] - df['low'])
+            df['tr2'] = abs(df['high'] - df['close'].shift())
+            df['tr3'] = abs(df['low'] - df['close'].shift())
+            df['tr'] = df[['tr1', 'tr2', 'tr3']].max(axis=1)
+            df['atr'] = df['tr'].rolling(window=window).mean()
+            
+            # Plus Directional Movement (+DM)
+            df['plus_dm'] = 0.0
+            df.loc[(df['high'] - df['high'].shift() > df['low'].shift() - df['low']) & 
+                   (df['high'] - df['high'].shift() > 0), 'plus_dm'] = df['high'] - df['high'].shift()
+            
+            # Minus Directional Movement (-DM)
+            df['minus_dm'] = 0.0
+            df.loc[(df['low'].shift() - df['low'] > df['high'] - df['high'].shift()) & 
+                   (df['low'].shift() - df['low'] > 0), 'minus_dm'] = df['low'].shift() - df['low']
+            
+            # Smooth +DM and -DM
+            df['plus_di'] = 100 * (df['plus_dm'].rolling(window=window).mean() / df['atr'])
+            df['minus_di'] = 100 * (df['minus_dm'].rolling(window=window).mean() / df['atr'])
+            
+            # Directional Movement Index (DX)
+            df['dx'] = 100 * (abs(df['plus_di'] - df['minus_di']) / (df['plus_di'] + df['minus_di']))
+            
+            # Average Directional Index (ADX)
+            df['adx'] = df['dx'].rolling(window=window).mean()
+        
+        # Update latest with calculated indicators
+        latest = df.iloc[-1]
+        
         # 1. Moving Average Crossover
-        if 'ema_8' in latest_df.columns and 'ema_21' in latest_df.columns:
+        print("\n--- EMA Crossover Analysis ---")
+        if 'ema_8' in df.columns and 'ema_21' in df.columns:
             total_indicators += 1
             
             # Current values
@@ -1250,35 +1354,68 @@ class RealtimeTrader:
             ema_21_current = latest['ema_21']
             
             # Previous values
-            ema_8_prev = latest_df.iloc[-2]['ema_8']
-            ema_21_prev = latest_df.iloc[-2]['ema_21']
+            ema_8_prev = df.iloc[-2]['ema_8']
+            ema_21_prev = df.iloc[-2]['ema_21']
+            
+            print(f"DEBUG: EMA 8 current: {ema_8_current:.4f}, previous: {ema_8_prev:.4f}")
+            print(f"DEBUG: EMA 21 current: {ema_21_current:.4f}, previous: {ema_21_prev:.4f}")
             
             # Check for crossover
             if ema_8_prev <= ema_21_prev and ema_8_current > ema_21_current:
                 # Bullish crossover
                 long_signals += 1
-                print("EMA Crossover: BULLISH (8 EMA crossed above 21 EMA)")
+                print("EMA Crossover: BULLISH (8 EMA crossed above 21 EMA) ✅")
             elif ema_8_prev >= ema_21_prev and ema_8_current < ema_21_current:
                 # Bearish crossover
                 short_signals += 1
-                print("EMA Crossover: BEARISH (8 EMA crossed below 21 EMA)")
+                print("EMA Crossover: BEARISH (8 EMA crossed below 21 EMA) ✅")
+            else:
+                # Check if EMA 8 is above EMA 21 (bullish trend)
+                if ema_8_current > ema_21_current:
+                    print("EMA Crossover: NEUTRAL but trending BULLISH (EMA 8 above EMA 21) ⚠️")
+                    # Add a smaller weight for existing trend
+                    long_signals += 0.5
+                # Check if EMA 8 is below EMA 21 (bearish trend)
+                elif ema_8_current < ema_21_current:
+                    print("EMA Crossover: NEUTRAL but trending BEARISH (EMA 8 below EMA 21) ⚠️")
+                    # Add a smaller weight for existing trend
+                    short_signals += 0.5
+                else:
+                    print("EMA Crossover: NEUTRAL (no recent crossover) ❌")
+        else:
+            print("DEBUG: EMA indicators not available in dataframe")
                 
         # 2. RSI
-        if 'rsi' in latest_df.columns:
+        print("\n--- RSI Analysis ---")
+        if 'rsi' in df.columns:
             total_indicators += 1
             rsi = latest['rsi']
+            print(f"DEBUG: RSI value: {rsi:.2f}")
             
             if rsi < 30:
                 # Oversold - bullish
                 long_signals += 1
-                print(f"RSI: BULLISH (Oversold at {rsi:.1f})")
+                print(f"RSI: BULLISH (Oversold at {rsi:.1f}) ✅")
             elif rsi > 70:
                 # Overbought - bearish
                 short_signals += 1
-                print(f"RSI: BEARISH (Overbought at {rsi:.1f})")
+                print(f"RSI: BEARISH (Overbought at {rsi:.1f}) ✅")
+            else:
+                # Add smaller weight for trending conditions
+                if rsi > 50 and rsi < 70:
+                    print(f"RSI: NEUTRAL but trending BULLISH ({rsi:.1f} is between 50-70) ⚠️")
+                    short_signals += 0.3
+                elif rsi > 30 and rsi < 50:
+                    print(f"RSI: NEUTRAL but trending BEARISH ({rsi:.1f} is between 30-50) ⚠️")
+                    long_signals += 0.3
+                else:
+                    print(f"RSI: NEUTRAL ({rsi:.1f} is between 30-70) ❌")
+        else:
+            print("DEBUG: RSI indicator not available in dataframe")
                 
         # 3. MACD
-        if 'macd' in latest_df.columns and 'macd_signal' in latest_df.columns:
+        print("\n--- MACD Analysis ---")
+        if 'macd' in df.columns and 'macd_signal' in df.columns:
             total_indicators += 1
             
             # Current values
@@ -1286,41 +1423,83 @@ class RealtimeTrader:
             signal_current = latest['macd_signal']
             
             # Previous values
-            macd_prev = latest_df.iloc[-2]['macd']
-            signal_prev = latest_df.iloc[-2]['macd_signal']
+            macd_prev = df.iloc[-2]['macd']
+            signal_prev = df.iloc[-2]['macd_signal']
+            
+            print(f"DEBUG: MACD current: {macd_current:.6f}, previous: {macd_prev:.6f}")
+            print(f"DEBUG: Signal current: {signal_current:.6f}, previous: {signal_prev:.6f}")
             
             # Check for crossover
             if macd_prev <= signal_prev and macd_current > signal_current:
                 # Bullish crossover
                 long_signals += 1
-                print(f"MACD: BULLISH (MACD crossed above signal line)")
+                print(f"MACD: BULLISH (MACD crossed above signal line) ✅")
             elif macd_prev >= signal_prev and macd_current < signal_current:
                 # Bearish crossover
                 short_signals += 1
-                print(f"MACD: BEARISH (MACD crossed below signal line)")
+                print(f"MACD: BEARISH (MACD crossed below signal line) ✅")
+            else:
+                # Check MACD position relative to zero line for trend bias
+                if macd_current > 0:
+                    print(f"MACD: NEUTRAL but trending BULLISH (MACD above zero) ⚠️")
+                    long_signals += 0.3
+                elif macd_current < 0:
+                    print(f"MACD: NEUTRAL but trending BEARISH (MACD below zero) ⚠️")
+                    short_signals += 0.3
+                else:
+                    print(f"MACD: NEUTRAL (no recent crossover) ❌")
+        else:
+            print("DEBUG: MACD indicators not available in dataframe")
                 
         # 4. Bollinger Bands
-        if 'bb_upper' in latest_df.columns and 'bb_lower' in latest_df.columns:
+        print("\n--- Bollinger Bands Analysis ---")
+        if 'bb_upper' in df.columns and 'bb_lower' in df.columns:
             total_indicators += 1
             
             close = latest['close']
             bb_upper = latest['bb_upper']
             bb_lower = latest['bb_lower']
+            bb_middle = latest['bb_middle'] if 'bb_middle' in latest.index else (bb_upper + bb_lower) / 2
             
             # Previous close
-            prev_close = latest_df.iloc[-2]['close']
+            prev_close = df.iloc[-2]['close']
             
-            if prev_close <= bb_lower and close > bb_lower:
-                # Price bouncing off lower band - bullish
-                long_signals += 1
-                print(f"Bollinger Bands: BULLISH (Price bounced off lower band)")
-            elif prev_close >= bb_upper and close < bb_upper:
-                # Price bouncing off upper band - bearish
-                short_signals += 1
-                print(f"Bollinger Bands: BEARISH (Price bounced off upper band)")
+            print(f"DEBUG: Close current: {close:.4f}, previous: {prev_close:.4f}")
+            print(f"DEBUG: BB Upper: {bb_upper:.4f}, Middle: {bb_middle:.4f}, Lower: {bb_lower:.4f}")
+            
+            # Calculate position within the bands (0-100%)
+            band_width = bb_upper - bb_lower
+            if band_width > 0:  # Avoid division by zero
+                position_pct = ((close - bb_lower) / band_width) * 100
+                print(f"DEBUG: Price position: {position_pct:.1f}% of band width")
+                
+                # Check for bounces off bands
+                if prev_close <= bb_lower and close > bb_lower:
+                    # Price bouncing off lower band - bullish
+                    long_signals += 1
+                    print(f"Bollinger Bands: BULLISH (Price bounced off lower band) ✅")
+                elif prev_close >= bb_upper and close < bb_upper:
+                    # Price bouncing off upper band - bearish
+                    short_signals += 1
+                    print(f"Bollinger Bands: BEARISH (Price bounced off upper band) ✅")
+                else:
+                    # Add smaller weight for position within bands
+                    if position_pct < 20:
+                        print(f"Bollinger Bands: NEUTRAL but near lower band ({position_pct:.1f}%) ⚠️")
+                        long_signals += 0.3
+                    elif position_pct > 80:
+                        print(f"Bollinger Bands: NEUTRAL but near upper band ({position_pct:.1f}%) ⚠️")
+                        short_signals += 0.3
+                    else:
+                        print(f"Bollinger Bands: NEUTRAL (no band interaction) ❌")
+            else:
+                print(f"Bollinger Bands: NEUTRAL (bands too narrow) ❌")
+        else:
+            print("DEBUG: Bollinger Bands indicators not available in dataframe")
                 
         # 5. Stochastic Oscillator
-        if 'stoch_k' in latest_df.columns and 'stoch_d' in latest_df.columns:
+        print("\n--- Stochastic Oscillator Analysis ---")
+        if 'stoch_k' in df.columns and 'stoch_d' in df.columns:
             total_indicators += 1
             
             # Current values
@@ -1328,101 +1507,176 @@ class RealtimeTrader:
             d_current = latest['stoch_d']
             
             # Previous values
-            k_prev = latest_df.iloc[-2]['stoch_k']
-            d_prev = latest_df.iloc[-2]['stoch_d']
+            k_prev = df.iloc[-2]['stoch_k']
+            d_prev = df.iloc[-2]['stoch_d']
+            
+            print(f"DEBUG: K current: {k_current:.2f}, previous: {k_prev:.2f}")
+            print(f"DEBUG: D current: {d_current:.2f}, previous: {d_prev:.2f}")
             
             if k_prev <= d_prev and k_current > d_current and k_current < 20:
                 # Bullish crossover in oversold territory
                 long_signals += 1
-                print(f"Stochastic: BULLISH (K crossed above D in oversold territory)")
+                print(f"Stochastic: BULLISH (K crossed above D in oversold territory) ✅")
             elif k_prev >= d_prev and k_current < d_current and k_current > 80:
                 # Bearish crossover in overbought territory
                 short_signals += 1
-                print(f"Stochastic: BEARISH (K crossed below D in overbought territory)")
+                print(f"Stochastic: BEARISH (K crossed below D in overbought territory) ✅")
+            else:
+                # Add smaller weight for overbought/oversold conditions
+                if k_current < 20:
+                    print(f"Stochastic: NEUTRAL but OVERSOLD (K at {k_current:.1f}) ⚠️")
+                    long_signals += 0.3
+                elif k_current > 80:
+                    print(f"Stochastic: NEUTRAL but OVERBOUGHT (K at {k_current:.1f}) ⚠️")
+                    short_signals += 0.3
+                else:
+                    print(f"Stochastic: NEUTRAL (no significant signal) ❌")
+        else:
+            print("DEBUG: Stochastic indicators not available in dataframe")
                 
         # 6. ADX for trend strength
-        if 'adx' in latest_df.columns:
+        print("\n--- ADX Trend Strength Analysis ---")
+        if 'adx' in df.columns:
             adx = latest['adx']
+            print(f"DEBUG: ADX value: {adx:.2f}")
             print(f"ADX: {adx:.1f} - {'Strong' if adx > 25 else 'Weak'} trend")
             
             # ADX doesn't give direction, just confirms strength of other signals
             if adx > 25:
                 # Strong trend - boost existing signals
+                old_long = long_signals
+                old_short = short_signals
                 long_signals = long_signals * 1.2 if long_signals > short_signals else long_signals
                 short_signals = short_signals * 1.2 if short_signals > long_signals else short_signals
+                print(f"DEBUG: Strong trend detected - boosting signals (Long: {old_long:.1f} → {long_signals:.1f}, Short: {old_short:.1f} → {short_signals:.1f})")
+        else:
+            print("DEBUG: ADX indicator not available in dataframe")
                 
         # 7. Volume analysis
-        if 'volume' in latest_df.columns:
+        print("\n--- Volume Analysis ---")
+        if 'volume' in df.columns:
             total_indicators += 1
             
             # Current volume
             current_volume = latest['volume']
             
             # Average volume (10 periods)
-            avg_volume = latest_df['volume'].iloc[-10:].mean()
+            avg_volume = df['volume'].iloc[-10:].mean()
             
             # Volume ratio
             volume_ratio = current_volume / avg_volume
             
             # Price change
-            price_change = latest['close'] - latest_df.iloc[-2]['close']
+            price_change = latest['close'] - df.iloc[-2]['close']
+            
+            print(f"DEBUG: Current volume: {current_volume:.2f}, Avg volume: {avg_volume:.2f}")
+            print(f"DEBUG: Volume ratio: {volume_ratio:.2f}x average")
+            print(f"DEBUG: Price change: {price_change:.6f} ({(price_change/df.iloc[-2]['close']*100):.2f}%)")
             
             # High volume with price increase - bullish
             if volume_ratio > 1.5 and price_change > 0:
                 long_signals += 1
-                print(f"Volume: BULLISH (High volume with price increase, ratio: {volume_ratio:.2f})")
+                print(f"Volume: BULLISH (High volume with price increase, ratio: {volume_ratio:.2f}) ✅")
             # High volume with price decrease - bearish
             elif volume_ratio > 1.5 and price_change < 0:
                 short_signals += 1
-                print(f"Volume: BEARISH (High volume with price decrease, ratio: {volume_ratio:.2f})")
+                print(f"Volume: BEARISH (High volume with price decrease, ratio: {volume_ratio:.2f}) ✅")
+            else:
+                # Add smaller weight for volume patterns
+                if volume_ratio > 1.2 and price_change > 0:
+                    print(f"Volume: NEUTRAL but increased volume with price rise (ratio: {volume_ratio:.2f}) ⚠️")
+                    long_signals += 0.2
+                elif volume_ratio > 1.2 and price_change < 0:
+                    print(f"Volume: NEUTRAL but increased volume with price drop (ratio: {volume_ratio:.2f}) ⚠️")
+                    short_signals += 0.2
+                else:
+                    print(f"Volume: NEUTRAL (no significant volume pattern) ❌")
+        else:
+            print("DEBUG: Volume data not available in dataframe")
                 
         # 8. Support/Resistance breakouts
+        print("\n--- Support/Resistance Analysis ---")
         # This is a simplified version - in a real system you'd have more sophisticated S/R detection
-        if len(latest_df) >= 20:
+        if len(df) >= 20:
             total_indicators += 1
             
             # Find recent highs and lows
-            recent_high = latest_df['high'].iloc[-20:].max()
-            recent_low = latest_df['low'].iloc[-20:].min()
+            recent_high = df['high'].iloc[-20:].max()
+            recent_low = df['low'].iloc[-20:].min()
             
             current_close = latest['close']
-            prev_close = latest_df.iloc[-2]['close']
+            prev_close = df.iloc[-2]['close']
+            
+            print(f"DEBUG: Recent high: {recent_high:.4f}, Recent low: {recent_low:.4f}")
+            print(f"DEBUG: Current close: {current_close:.4f}, Previous close: {prev_close:.4f}")
+            
+            # Calculate distance to high and low as percentage
+            distance_to_high_pct = ((recent_high - current_close) / current_close) * 100
+            distance_to_low_pct = ((current_close - recent_low) / current_close) * 100
+            
+            print(f"DEBUG: Distance to high: {distance_to_high_pct:.2f}%")
+            print(f"DEBUG: Distance to low: {distance_to_low_pct:.2f}%")
             
             # Breakout above resistance
             if prev_close < recent_high and current_close > recent_high:
                 long_signals += 1
-                print(f"Support/Resistance: BULLISH (Breakout above resistance at {recent_high:.2f})")
+                print(f"Support/Resistance: BULLISH (Breakout above resistance at {recent_high:.4f}) ✅")
             # Breakdown below support
             elif prev_close > recent_low and current_close < recent_low:
                 short_signals += 1
-                print(f"Support/Resistance: BEARISH (Breakdown below support at {recent_low:.2f})")
+                print(f"Support/Resistance: BEARISH (Breakdown below support at {recent_low:.4f}) ✅")
+            else:
+                # Add smaller weight for proximity to support/resistance
+                if distance_to_high_pct < 1.0:
+                    print(f"Support/Resistance: NEUTRAL but near resistance ({distance_to_high_pct:.2f}% from high) ⚠️")
+                    short_signals += 0.2
+                elif distance_to_low_pct < 1.0:
+                    print(f"Support/Resistance: NEUTRAL but near support ({distance_to_low_pct:.2f}% from low) ⚠️")
+                    long_signals += 0.2
+                else:
+                    print(f"Support/Resistance: NEUTRAL (no breakout/breakdown) ❌")
+        else:
+            print("DEBUG: Not enough data for Support/Resistance analysis")
                 
         # Calculate final signal
+        print("\n--- Final Signal Calculation ---")
+        print(f"DEBUG: Long signals: {long_signals:.1f}, Short signals: {short_signals:.1f}, Total indicators: {total_indicators}")
+        print(f"DEBUG: Signal threshold: {self.signal_confirmation_threshold} indicators required")
+        
         # Require at least the threshold number of confirming indicators
         if long_signals >= self.signal_confirmation_threshold and long_signals > short_signals:
             signal = 1  # Long
             confidence = min(100, (long_signals / total_indicators) * 100)
+            print(f"DEBUG: Long signals ({long_signals:.1f}) meet threshold and exceed short signals ({short_signals:.1f})")
         elif short_signals >= self.signal_confirmation_threshold and short_signals > long_signals:
             signal = -1  # Short
             confidence = min(100, (short_signals / total_indicators) * 100)
+            print(f"DEBUG: Short signals ({short_signals:.1f}) meet threshold and exceed long signals ({long_signals:.1f})")
         else:
             signal = 0  # No clear signal
             confidence = 0
+            print(f"DEBUG: Neither long nor short signals meet threshold requirements")
             
         # Check for signal cooldown period
         if signal != 0 and self.last_signal_time is not None:
             time_since_last_signal = (datetime.now() - self.last_signal_time).total_seconds() / 60
+            print(f"DEBUG: Time since last signal: {time_since_last_signal:.1f} minutes (cooldown: {self.signal_cooldown_minutes} minutes)")
+            
             if time_since_last_signal < self.signal_cooldown_minutes:
                 print(f"Signal ignored: Cooldown period active ({time_since_last_signal:.1f} minutes since last signal)")
+                print("========== ENHANCED SIGNAL ANALYSIS END ==========\n")
                 return (0, 0)
                 
         # Update last signal time if we have a valid signal
         if signal != 0:
             self.last_signal_time = datetime.now()
+            print(f"DEBUG: Updated last signal time to {self.last_signal_time}")
             
         # Print summary
-        print(f"Enhanced Signal Analysis: Long indicators: {long_signals}, Short indicators: {short_signals}, Total: {total_indicators}")
+        print("\n--- Signal Summary ---")
+        print(f"Enhanced Signal Analysis: Long indicators: {long_signals:.1f}, Short indicators: {short_signals:.1f}, Total: {total_indicators}")
         print(f"Final Signal: {'LONG' if signal == 1 else 'SHORT' if signal == -1 else 'NEUTRAL'} with {confidence:.1f}% confidence")
+        print("========== ENHANCED SIGNAL ANALYSIS END ==========\n")
         
         return (signal, confidence)
 
@@ -2576,19 +2830,47 @@ def run_real_trading(realtime_trader, duration_hours=24, update_interval_minutes
                                 realtime_trader.symbol, latest_df
                             )
                         )
+                        print(f"ML Signal: {'BUY' if ml_signal == 1 else 'SELL' if ml_signal == -1 else 'NEUTRAL'} with {ml_confidence:.2f} confidence")
                 except Exception as e:
                     print(f"Error getting ML signal: {e}")
                     ml_signal = 0
                     ml_confidence = 0
 
-                # Combine signals
+                # Combine signals with improved logic
                 signal = 0
-                if traditional_signal == ml_signal:
+                
+                # Print signal comparison
+                print(f"\n--- Signal Comparison ---")
+                print(f"Traditional Signal: {'BUY' if traditional_signal == 1 else 'SELL' if traditional_signal == -1 else 'NEUTRAL'}")
+                print(f"ML Signal: {'BUY' if ml_signal == 1 else 'SELL' if ml_signal == -1 else 'NEUTRAL'} (Confidence: {ml_confidence:.2f})")
+                
+                # Decision logic
+                if traditional_signal == ml_signal and traditional_signal != 0:
+                    # Both signals agree and are not neutral
                     signal = traditional_signal
-                elif ml_confidence > 0.75:
+                    print(f"DECISION: Using {'BUY' if signal == 1 else 'SELL'} signal - Both systems agree")
+                elif ml_signal != 0 and ml_confidence >= 0.75:
+                    # ML signal is strong with high confidence
                     signal = ml_signal
+                    print(f"DECISION: Using ML {'BUY' if signal == 1 else 'SELL'} signal - High confidence ({ml_confidence:.2f})")
+                elif traditional_signal != 0:
+                    # Fall back to traditional signal if ML is neutral or low confidence
+                    signal = traditional_signal
+                    print(f"DECISION: Using traditional {'BUY' if signal == 1 else 'SELL'} signal - ML signal weak or neutral")
                 else:
-                    signal = traditional_signal  # Fallback to traditional signal
+                    # No clear signal
+                    signal = 0
+                    print("DECISION: No trade - Conflicting or neutral signals")
+                
+                # Apply trend following if enabled
+                if realtime_trader.trend_following_mode and signal != 0:
+                    trend_direction, trend_strength = realtime_trader.analyze_market_trend()
+                    print(f"Market Trend: {'BULLISH' if trend_direction > 0 else 'BEARISH' if trend_direction < 0 else 'NEUTRAL'} (Strength: {trend_strength:.1f}%)")
+                    
+                    # Only trade in the direction of the trend
+                    if (signal > 0 and trend_direction <= 0) or (signal < 0 and trend_direction >= 0):
+                        print(f"Signal rejected: Against market trend direction")
+                        signal = 0
 
                 # Execute trade if there's a signal
                 if signal != 0 and not realtime_trader.trading_disabled:
