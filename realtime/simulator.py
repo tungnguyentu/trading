@@ -20,7 +20,7 @@ from .utils.reporting import save_results
 load_dotenv()
 
 class RealtimeSimulator:
-    def __init__(self, symbol='BTCUSDT', initial_investment=50.0, daily_profit_target=15.0, leverage=15):
+    def __init__(self, symbol='BTCUSDT', initial_investment=50.0, daily_profit_target=15.0, leverage=5):
         """
         Initialize the real-time simulator
         
@@ -28,14 +28,14 @@ class RealtimeSimulator:
             symbol: Trading pair to simulate
             initial_investment: Starting capital in USD
             daily_profit_target: Target profit per day in USD
-            leverage: Margin trading leverage (15x-20x)
+            leverage: Margin trading leverage (1x-20x)
         """
         self.symbol = symbol
         self.initial_investment = initial_investment
         self.daily_profit_target = daily_profit_target
         
-        # Set leverage (constrain between 15x and 20x)
-        self.leverage = max(15, min(20, leverage))
+        # Set leverage (constrain between 1x and 20x)
+        self.leverage = max(1, min(20, leverage))
         
         # Initialize Binance client
         self.api_key = os.getenv('BINANCE_API_KEY')
@@ -170,7 +170,7 @@ if __name__ == "__main__":
     parser.add_argument('--target', type=float, default=15.0, help='Daily profit target')
     parser.add_argument('--hours', type=int, default=24, help='Duration in hours')
     parser.add_argument('--interval', type=int, default=15, help='Update interval in minutes')
-    parser.add_argument('--leverage', type=int, default=15, help='Margin trading leverage (15-20x)')
+    parser.add_argument('--leverage', type=int, default=5, help='Margin trading leverage (1-20x)')
     
     args = parser.parse_args()
     

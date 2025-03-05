@@ -9,7 +9,7 @@ def main():
     parser.add_argument('--target', type=float, default=15.0, help='Daily profit target')
     parser.add_argument('--hours', type=int, default=24, help='Duration in hours')
     parser.add_argument('--interval', type=int, default=15, help='Update interval in minutes')
-    parser.add_argument('--leverage', type=int, default=15, help='Margin trading leverage (15-20x)')
+    parser.add_argument('--leverage', type=int, default=5, help='Margin trading leverage (1-20x)')
     
     args = parser.parse_args()
     
