@@ -8,6 +8,7 @@ import time
 from datetime import datetime
 from binance.exceptions import BinanceAPIException
 from ..utils.indicators import calculate_atr
+import math
 
 class PositionManager:
     def __init__(self, trader):
@@ -581,4 +582,78 @@ class PositionManager:
         tp_pct = min(tp_pct, 50.0)
         sl_pct = min(sl_pct, 30.0)
         
-        return (tp_pct, sl_pct) 
+        return (tp_pct, sl_pct)
+
+    def calculate_position_size(self, current_price, risk_pct=None):
+        """Calculate position size based on risk management and margin requirements"""
+        if risk_pct is None:
+            risk_pct = self.trader.risk_pct
+
+        # Get account balance through trader's account manager
+        account_balance = self.trader.account_manager.get_account_balance()
+        if self.trader.compound_interest:
+            account_balance = self.trader.symbol_balance
+
+        # Calculate maximum position value with leverage
+        max_notional = account_balance * self.trader.leverage
+        max_quantity = max_notional / current_price
+
+        # Calculate risk amount
+        risk_amount = account_balance * risk_pct
+
+        # Calculate stop loss distance
+        if self.trader.use_atr_for_risk:
+            latest_df = self.trader.account_manager.get_latest_data(lookback_candles=14)
+            if latest_df is not None and len(latest_df) > 0:
+                atr = latest_df["atr"].iloc[-1] if "atr" in latest_df.columns else (current_price * 0.01)
+                stop_loss_distance = atr * self.trader.atr_multiplier
+            else:
+                stop_loss_distance = current_price * self.trader.stop_loss_pct
+        else:
+            stop_loss_distance = current_price * self.trader.stop_loss_pct
+
+        # Calculate risk-based position size
+        risk_based_position = (risk_amount / stop_loss_distance) * self.trader.leverage
+
+        # Determine final position size based on strategy
+        if self.trader.use_full_margin:
+            position_size = max_quantity
+        elif self.trader.use_full_investment:
+            position_size = min(max_quantity, (account_balance * self.trader.leverage) / current_price)
+        else:
+            position_size = min(risk_based_position, max_quantity)
+
+        # Get precision and format position size
+        quantity_precision = self.trader.account_manager.get_quantity_precision()
+        position_size = float("{:0.0{}f}".format(position_size, quantity_precision))
+
+        # Ensure position meets minimum requirements
+        min_quantity = self.trader.account_manager.get_min_quantity()
+        min_notional = self.trader.account_manager.get_min_notional()
+
+        if position_size < min_quantity:
+            position_size = min_quantity
+        
+        # Check if position value meets minimum notional
+        position_value = position_size * current_price
+        if position_value < min_notional:
+            position_size = math.ceil((min_notional / current_price) * 10**quantity_precision) / 10**quantity_precision
+
+        # Final check against maximum allowed size
+        position_size = min(position_size, max_quantity)
+
+        # Debug logging
+        print("\n=== Position Size Calculation ===")
+        print(f"Account Balance: ${account_balance:.2f}")
+        print(f"Leverage: {self.trader.leverage}x")
+        print(f"Maximum Position Value: ${max_notional:.2f}")
+        print(f"Maximum Quantity: {max_quantity:.4f}")
+        print(f"Risk Amount: ${risk_amount:.2f}")
+        print(f"Stop Loss Distance: ${stop_loss_distance:.4f}")
+        print(f"Risk-based Position Size: {risk_based_position:.4f}")
+        print(f"Final Position Size: {position_size:.4f}")
+        print(f"Position Value: ${position_size * current_price:.2f}")
+        print(f"Required Margin: ${(position_size * current_price / self.trader.leverage):.2f}")
+        print("===============================\n")
+
+        return position_size 
