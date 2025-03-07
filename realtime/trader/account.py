@@ -62,6 +62,12 @@ class AccountManager:
             Float: Available balance in USDT
         """
         try:
+            # If in test mode, use initial investment as balance
+            if hasattr(self.trader, 'test_mode') and self.trader.test_mode:
+                simulated_balance = self.trader.initial_investment
+                print(f"Test mode: Using simulated balance of {simulated_balance} USDT")
+                return simulated_balance
+                
             # Get futures account information
             account_info = self.client.futures_account()
             
@@ -74,6 +80,13 @@ class AccountManager:
             
         except BinanceAPIException as e:
             print(f"Error fetching account balance: {e}")
+            
+            # If in test mode, provide a fallback simulated balance
+            if hasattr(self.trader, 'test_mode') and self.trader.test_mode:
+                simulated_balance = self.trader.initial_investment
+                print(f"Test mode: Using fallback simulated balance of {simulated_balance} USDT")
+                return simulated_balance
+                
             return 0.0
     
     def get_current_price(self):
@@ -209,4 +222,4 @@ class AccountManager:
                     return float(filter_item["minQty"])
         
         # Default value if not found
-        return 0.001 
+        return 0.001

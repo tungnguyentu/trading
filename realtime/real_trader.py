@@ -3497,23 +3497,11 @@ def run_real_trading(
     start_time = datetime.now()
     end_time = start_time + timedelta(hours=duration_hours)
 
-    # Send notification
-    realtime_trader.send_notification(
-        f"🚀 REAL TRADING STARTED\n"
-        f"Symbol: {realtime_trader.symbol}\n"
-        f"Initial Investment: ${realtime_trader.initial_investment:.2f}\n"
-        f"Leverage: {realtime_trader.leverage}x\n"
-        f"Daily Profit Target: ${realtime_trader.daily_profit_target:.2f}\n"
-        f"Duration: {duration_hours} hours\n"
-        f"Update Interval: {update_interval_seconds if update_interval_seconds > 0 else update_interval_minutes} {interval_unit}\n"
-        f"Enhanced Signals: {'Enabled' if realtime_trader.use_enhanced_signals else 'Disabled'}\n"
-        f"Trend Following: {'Enabled' if realtime_trader.trend_following_mode else 'Disabled'}\n"
-        f"Start Time: {start_time.strftime('%Y-%m-%d %H:%M:%S')}\n"
-        f"End Time: {end_time.strftime('%Y-%m-%d %H:%M:%S')}"
-    )
-
     # Track the current day for daily resets
     current_day = datetime.now().date()
+
+    # Track last signal time for cooldown
+    last_signal_time = None
 
     # Main trading loop
     while datetime.now() < end_time:
@@ -3521,293 +3509,34 @@ def run_real_trading(
             current_time = datetime.now()
             print(f"\n=== Update: {current_time.strftime('%Y-%m-%d %H:%M:%S')} ===")
 
-            # Check if day has changed and reset daily tracking
-            if current_time.date() != current_day:
-                realtime_trader.daily_loss = 0
-                realtime_trader.trading_disabled = False
-                current_day = current_time.date()
-                realtime_trader.last_reset_day = current_day
-
-                # Reset daily profit tracking for the new day
-                day_key = current_time.strftime("%Y-%m-%d")
-                if not hasattr(realtime_trader, "daily_profits"):
-                    realtime_trader.daily_profits = {}
-                realtime_trader.daily_profits[day_key] = 0
-
-                print(f"New day started. Daily tracking reset.")
-
-                # Send notification about new day
-                realtime_trader.send_notification(
-                    f"📅 NEW TRADING DAY STARTED\n"
-                    f"Symbol: {realtime_trader.symbol}\n"
-                    f"Date: {day_key}\n"
-                    f"Daily Profit Target: ${realtime_trader.daily_profit_target:.2f}\n"
-                    f"Current Balance: ${realtime_trader.get_account_balance():.2f}\n"
-                    f"Symbol Balance: ${realtime_trader.symbol_balance:.2f}"
-                )
+            # Check signal cooldown
+            if last_signal_time is not None:
+                cooldown_remaining = realtime_trader.signal_cooldown_minutes * 60 - (current_time - last_signal_time).total_seconds()
+                if cooldown_remaining > 0:
+                    mins, secs = divmod(int(cooldown_remaining), 60)
+                    print(f"⏳ Signal cooldown: {mins:02d}:{secs:02d} remaining")
+                else:
+                    print("✅ Signal cooldown complete")
 
             # Get latest data
-            latest_df = realtime_trader.get_latest_data(
-                lookback_candles=2
-            )  # Just get the latest candles
+            latest_df = realtime_trader.get_latest_data(lookback_candles=2)
 
             if latest_df is None or len(latest_df) < 1:
                 print("Error fetching latest data, will retry next interval")
-                time.sleep(60)  # Wait a minute before retrying
+                time.sleep(60)
                 continue
 
             # Get the latest candle
             latest_candle = latest_df.iloc[-1]
-
-            # Get current price
             current_price = float(latest_candle["close"])
             print(f"Current {realtime_trader.symbol} price: ${current_price:.2f}")
 
-            # Check if it's time to retrain the ML model
-            if (
-                realtime_trader.use_ml_signals
-                and realtime_trader.retrain_interval > 0
-                and (
-                    realtime_trader.last_train_time is None
-                    or (current_time - realtime_trader.last_train_time).total_seconds()
-                    / 3600
-                    >= realtime_trader.retrain_interval
-                )
-            ):
-                print(
-                    f"Retraining ML model (scheduled every {realtime_trader.retrain_interval} hours)..."
-                )
-                realtime_trader.train_ml_model()
-
-            # Initialize signals
-            traditional_signal = latest_candle["signal"]
-            ml_signal = 0
-            ml_confidence = 0
-
-            # Check for take profit / stop loss for open positions
-            if realtime_trader.has_open_position():
-                tp_sl_result = realtime_trader.check_take_profit_stop_loss(
-                    current_price, latest_candle["timestamp"]
-                )
-
-                if tp_sl_result:
-                    print(f"TP/SL triggered: {tp_sl_result}")
-
-                    # The close_position method already sends a detailed notification
-                    # No need to send another notification here
-                    # This prevents duplicate notifications with inconsistent information
-                else:
-                    # If position is still open and no TP/SL was triggered, reassess based on latest signals
-                    if realtime_trader.reassess_positions:
-                        print(
-                            "\nReassessing current position based on latest signals..."
-                        )
-                        reassess_result = realtime_trader.reassess_position(
-                            current_price, latest_candle["timestamp"]
-                        )
-
-                        if reassess_result:
-                            print(
-                                f"Position adjusted based on signal reassessment: {reassess_result}"
-                            )
-                            continue  # Skip to next iteration after position adjustment
-
-            # Get ML signal with error handling
-            ml_signal = 0
-            ml_confidence = 0
-            try:
-                if realtime_trader.ml_manager and realtime_trader.use_ml_signals:
-                    ml_signal, ml_confidence = realtime_trader.ml_manager.get_ml_signal(
-                        realtime_trader.symbol, latest_df
-                    )
-                    print(
-                        f"ML Signal: {'BUY' if ml_signal == 1 else 'SELL' if ml_signal == -1 else 'NEUTRAL'} with {ml_confidence:.2f} confidence"
-                    )
-                elif not realtime_trader.use_ml_signals:
-                    print("ML Signal: DISABLED (ML signals are turned off)")
-            except Exception as e:
-                print(f"Error getting ML signal: {e}")
-                ml_signal = 0
-                ml_confidence = 0
-
-            # Combine signals with improved logic
-            signal = 0
-
-            # Print signal comparison
-            print(f"\n--- Signal Comparison ---")
-            print(
-                f"Traditional Signal: {'BUY' if traditional_signal == 1 else 'SELL' if traditional_signal == -1 else 'NEUTRAL'}"
-            )
-            if realtime_trader.use_ml_signals:
-                print(
-                    f"ML Signal: {'BUY' if ml_signal == 1 else 'SELL' if ml_signal == -1 else 'NEUTRAL'} (Confidence: {ml_confidence:.2f})"
-                )
-            else:
-                print("ML Signal: DISABLED")
-
-            # Decision logic
-            if (
-                traditional_signal == ml_signal
-                and traditional_signal != 0
-                and realtime_trader.use_ml_signals
-                and ml_confidence >= realtime_trader.ml_confidence
-            ):
-                # Both signals agree and are not neutral
-                signal = traditional_signal
-                print(
-                    f"DECISION: Using {'BUY' if signal == 1 else 'SELL'} signal - Both systems agree"
-                )
-            # Modified: Lowered ML confidence threshold from 0.75 to 0.6
-            elif (
-                ml_signal != 0
-                and ml_confidence >= realtime_trader.ml_confidence
-                and realtime_trader.use_ml_signals
-            ):
-                # ML signal is strong with high confidence
-                signal = ml_signal
-                print(
-                    f"DECISION: Using ML {'BUY' if signal == 1 else 'SELL'} signal - Good confidence ({ml_confidence:.2f})"
-                )
-            # Commented out traditional signal fallback to prioritize ML signals
-            elif traditional_signal != 0:
-                # Fall back to traditional signal if ML is disabled, neutral or low confidence
-                signal = traditional_signal
-                if not realtime_trader.use_ml_signals:
-                    print(
-                        f"DECISION: Using traditional {'BUY' if signal == 1 else 'SELL'} signal - ML signals disabled"
-                    )
-                else:
-                    print(
-                        f"DECISION: Using traditional {'BUY' if signal == 1 else 'SELL'} signal - ML signal weak or neutral"
-                    )
-            else:
-                # No clear signal
-                signal = 0
-                print("DECISION: No trade - Conflicting or neutral signals")
-
-            # Apply trend following if enabled
-            if realtime_trader.trend_following_mode and signal != 0:
-                trend_direction, trend_strength = realtime_trader.analyze_market_trend()
-                print(
-                    f"Market Trend: {'BULLISH' if trend_direction > 0 else 'BEARISH' if trend_direction < 0 else 'NEUTRAL'} (Strength: {trend_strength:.1f}%)"
-                )
-
-                # Only trade in the direction of the trend
-                if (signal > 0 and trend_direction <= 0) or (
-                    signal < 0 and trend_direction >= 0
-                ):
-                    print(f"Signal rejected: Against market trend direction")
-                    signal = 0
-
-            # Execute trade if there's a signal
-            if signal != 0 and not realtime_trader.trading_disabled:
-                # Execute the trade with risk management
-                trade_result = realtime_trader.execute_trade(
-                    signal, current_price, latest_candle["timestamp"]
-                )
-
-                if trade_result:
-                    print(trade_result)
-
-                    # Calculate stop loss and take profit levels for notification
-                    if signal == 1:  # BUY signal
-                        stop_loss_price = current_price * (
-                            1 - realtime_trader.stop_loss_pct
-                        )
-                        take_profit_price = current_price * (
-                            1 + realtime_trader.take_profit_pct
-                        )
-                    else:  # SELL signal
-                        stop_loss_price = current_price * (
-                            1 + realtime_trader.stop_loss_pct
-                        )
-                        take_profit_price = current_price * (
-                            1 - realtime_trader.take_profit_pct
-                        )
-
-                    # Send notification for position opened
-                    if "BUY" in trade_result or "SELL" in trade_result:
-                        position_type = "LONG" if "BUY" in trade_result else "SHORT"
-                        emoji = "🟢" if position_type == "LONG" else "🔴"
-
-                        # Extract position size from trade result
-                        size_match = re.search(r"([0-9.]+) units", trade_result)
-                        position_size = float(size_match.group(1)) if size_match else 0
-                        open_message = (
-                            f"{emoji} POSITION OPENED ({position_type})\n"
-                            f"Symbol: {realtime_trader.symbol}\n"
-                            f"Entry Price: ${current_price:,.4f}\n"
-                            f"Position Size: {position_size:,.6f} units\n"
-                            f"Stop Loss: ${stop_loss_price:,.4f}\n"
-                            f"Take Profit: ${take_profit_price:,.4f}\n"
-                            f"Partial TP: {realtime_trader.partial_tp_pct*100:.1f}% ({realtime_trader.partial_tp_size*100:.0f}% of position)\n"
-                            f"Balance: ${realtime_trader.get_account_balance():,.2f}"
-                        )
-                        realtime_trader.send_notification(open_message)
-
-            # Print current status
-            account_balance = realtime_trader.get_account_balance()
-            print(f"Current balance: ${account_balance:.2f}")
-
-            if realtime_trader.has_open_position():
-                position_info = realtime_trader.get_position_info()
-
-                if position_info:
-                    print(f"Current position: {position_info['position'].upper()}")
-                    print(f"Entry price: ${position_info['entry_price']:.4f}")
-                    print(f"Position size: {position_info['position_size']:.6f} units")
-                    print(f"Position value: ${position_info['position_value']:.2f}")
-                    print(f"Unrealized P/L: ${position_info['profit_loss']:.2f}")
-
-                    # Send position update notification on every update
-                    # Calculate profit percentage
-                    profit_pct = position_info["profit_pct"]
-                    profit_loss = position_info["profit_loss"]
-
-                    # Only send update if significant change (>1% profit change)
-                    if abs(profit_pct) > 1:
-                        emoji = "📈" if profit_pct > 0 else "📉"
-                        # Format stop loss and take profit values
-                        stop_loss_str = (
-                            "N/A"
-                            if position_info["stop_loss"] is None
-                            else "$%.2f" % position_info["stop_loss"]
-                        )
-                        take_profit_str = (
-                            "N/A"
-                            if position_info["take_profit"] is None
-                            else "$%.2f" % position_info["take_profit"]
-                        )
-
-                        # Add partial take profit status
-                        partial_tp_status = (
-                            "EXECUTED"
-                            if position_info["partial_tp_executed"]
-                            else "PENDING"
-                        )
-                        partial_tp_info = f"{position_info['partial_tp_pct']*100:.1f}% ({position_info['partial_tp_size']*100:.0f}% of position)"
-
-                        # Show original position size if partial TP executed
-                        position_size_info = position_info["position_size"]
-                        if position_info["partial_tp_executed"]:
-                            position_size_info = f"{position_size_info:.6f} (original: {position_info['original_position_size']:.6f})"
-                        else:
-                            position_size_info = f"{position_size_info:.6f}"
-
-                        update_message = (
-                            f"{emoji} POSITION UPDATE ({position_info['position'].upper()})\n"
-                            f"Symbol: {realtime_trader.symbol}\n"
-                            f"Current Price: ${position_info['current_price']:.4f}\n"
-                            f"Entry Price: ${position_info['entry_price']:.4f}\n"
-                            f"Position Size: {position_size_info}\n"
-                            f"Unrealized P/L: ${profit_loss:.2f} ({profit_pct:.2f}%)\n"
-                            f"Stop Loss: {stop_loss_str}\n"
-                            f"Take Profit: {take_profit_str}\n"
-                            f"Partial TP: {partial_tp_info} - {partial_tp_status}"
-                        )
-                        realtime_trader.send_notification(update_message)
-                else:
-                    print("Position info not available, will retry next update")
+            # Generate trading signal
+            signal = realtime_trader.generate_trading_signal(latest_df)
+            
+            # Update last signal time if we got a valid signal
+            if signal != 0:
+                last_signal_time = current_time
 
             # Save results
             realtime_trader.save_trading_results()
@@ -3817,10 +3546,8 @@ def run_real_trading(
             sleep_time = (next_update - datetime.now()).total_seconds()
 
             if sleep_time > 0:
-                print(f"Next update at {next_update.strftime('%H:%M:%S')}")
-                print(f"Next update in {sleep_time:.0f} seconds")
-                print("Countdown started...")
-
+                print(f"\nNext update at {next_update.strftime('%H:%M:%S')}")
+                
                 # Start countdown timer
                 start_time = time.time()
                 end_wait_time = start_time + sleep_time
@@ -3829,28 +3556,35 @@ def run_real_trading(
                     # Calculate remaining time
                     remaining = end_wait_time - time.time()
                     mins, secs = divmod(int(remaining), 60)
+                    
+                    # Calculate signal cooldown
+                    if last_signal_time is not None:
+                        cooldown_remaining = realtime_trader.signal_cooldown_minutes * 60 - (datetime.now() - last_signal_time).total_seconds()
+                        cooldown_status = ""
+                        if cooldown_remaining > 0:
+                            c_mins, c_secs = divmod(int(cooldown_remaining), 60)
+                            cooldown_status = f" | 🔒 Signal cooldown: {c_mins:02d}:{c_secs:02d}"
+                        else:
+                            cooldown_status = " | 🔓 Ready for new signals"
+                    else:
+                        cooldown_status = " | 🔓 Ready for new signals"
 
                     # Create progress bar
                     bar_length = 20
-                    progress = 1 - (
-                        remaining / sleep_time
-                    )  # Invert so it fills up as we go
-                    progress_pct = progress
+                    progress = 1 - (remaining / sleep_time)
                     filled_len = int(bar_length * progress)
                     bar = "█" * filled_len + "░" * (bar_length - filled_len)
 
-                    # Display countdown
-                    countdown = f"⏱️ Next update in: {mins:02d}:{secs:02d} [{bar}] {progress_pct:.0%}"
+                    # Display countdown with signal cooldown status
+                    countdown = f"⏱️ Next update in: {mins:02d}:{secs:02d} [{bar}] {progress*100:.0f}%{cooldown_status}"
                     print(countdown, end="\r", flush=True)
                     time.sleep(1)
 
-                print(" " * 100, end="\r")  # Clear the line
+                print(" " * 150, end="\r")  # Clear the line
                 print("Updating now...")
             else:
-                print(
-                    "Processing took longer than update interval, continuing immediately"
-                )
-                time.sleep(1)  # Small sleep to prevent CPU overload
+                print("Processing took longer than update interval, continuing immediately")
+                time.sleep(1)
 
         except KeyboardInterrupt:
             print("\nTrading interrupted by user")
@@ -3859,43 +3593,14 @@ def run_real_trading(
         except Exception as e:
             print(f"Error in trading loop: {e}")
             realtime_trader.send_notification(f"⚠️ ERROR: {e}")
-            # Wait a bit before retrying
             time.sleep(60)
 
     # Trading completed
     print("\n=== Trading Completed ===")
-
-    # Get final account balance
     final_balance = realtime_trader.get_account_balance()
-    profit_loss = final_balance - realtime_trader.initial_investment
-    return_pct = (profit_loss / realtime_trader.initial_investment) * 100
-
-    print(f"Final balance: ${final_balance:.2f}")
-    print(f"Profit/Loss: ${profit_loss:.2f}")
-    print(f"Return: {return_pct:.2f}%")
-
-    # Close any open positions
-    if realtime_trader.has_open_position():
-        print("Closing open position...")
-        current_price = realtime_trader.get_current_price()
-        close_result = realtime_trader.close_position(
-            current_price, datetime.now(), "end_of_session"
-        )
-
-        if close_result:
-            print(f"Position closed: {close_result}")
-
-    # Send final notification
-    realtime_trader.send_notification(
-        f"🏁 TRADING SESSION COMPLETED\n"
-        f"Symbol: {realtime_trader.symbol}\n"
-        f"Duration: {duration_hours} hours\n"
-        f"Final Balance: ${final_balance:.2f}\n"
-        f"Profit/Loss: ${profit_loss:.2f} ({return_pct:.2f}%)"
-    )
 
     return {
         "final_balance": final_balance,
-        "profit_loss": profit_loss,
-        "return_pct": return_pct,
+        "profit_loss": final_balance - realtime_trader.initial_investment,
+        "return_pct": (final_balance - realtime_trader.initial_investment) / realtime_trader.initial_investment * 100,
     }

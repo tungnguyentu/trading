@@ -204,11 +204,22 @@ class OrderExecutor:
             float: Position size in quote currency
         """
         # Get account balance
-        account_balance = self.trader.account_manager.get_account_balance()
+        if self.test_mode:
+            # Use initial investment as account balance in test mode
+            account_balance = self.trader.initial_investment
+            print(f"Test mode: Using initial investment of {account_balance} USDT as account balance")
+        else:
+            account_balance = self.trader.account_manager.get_account_balance()
         
         if account_balance <= 0:
             print("Cannot calculate position size: Zero or negative account balance")
-            return 0
+            # In test mode, provide a default value
+            if self.test_mode:
+                default_balance = 1000.0
+                print(f"Test mode: Using default balance of {default_balance} USDT")
+                account_balance = default_balance
+            else:
+                return 0
         
         # Determine investment amount
         if self.trader.use_full_investment:
@@ -237,7 +248,12 @@ class OrderExecutor:
         position_size *= self.leverage
         
         # Ensure minimum notional value
-        min_notional = self.trader.account_manager.get_min_notional()
+        if self.test_mode:
+            # Skip minimum notional check in test mode
+            min_notional = 5.0  # Default value
+        else:
+            min_notional = self.trader.account_manager.get_min_notional()
+            
         if position_size < min_notional:
             print(f"Warning: Position size {position_size:.2f} is below minimum notional {min_notional:.2f}")
             position_size = min_notional

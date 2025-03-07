@@ -106,6 +106,9 @@ def parse_arguments():
     parser.add_argument(
         "--compound", action="store_true", help="Enable compound interest"
     )
+    parser.add_argument(
+        "--full-margin", action="store_true", help="Use full margin for trading"
+    )
 
     # Take profit and stop loss settings
     parser.add_argument(
@@ -240,7 +243,7 @@ def main():
         leverage=args.leverage,
         test_mode=args.test_mode,
         use_full_investment=False,
-        use_full_margin=False,
+        use_full_margin=args.full_margin,
         compound_interest=args.compound,
         enable_pyramiding=False,
         max_pyramid_entries=2,
