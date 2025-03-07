@@ -114,13 +114,14 @@ class OrderExecutor:
             })
             
             # Send notification
-            self.trader.send_notification(
-                f"🟢 {signal} POSITION OPENED on {self.symbol}\n"
-                f"{'TEST MODE\n' if self.trader.test_mode else ''}"
-                f"Quantity: {quantity}\n"
-                f"Price: {current_price:.2f}\n"
-                f"Leverage: {self.leverage}x"
-            )
+            notification_msg = f"🟢 {signal} POSITION OPENED on {self.symbol}\n"
+            if self.trader.test_mode:
+                notification_msg += "TEST MODE\n"
+            notification_msg += f"Quantity: {quantity}\n"
+            notification_msg += f"Price: {current_price:.2f}\n"
+            notification_msg += f"Leverage: {self.leverage}x"
+            
+            self.trader.send_notification(notification_msg)
             
             # Reset pyramid entries counter
             self.trader.pyramid_entries = 0
