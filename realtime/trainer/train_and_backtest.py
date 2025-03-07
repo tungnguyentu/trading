@@ -27,6 +27,8 @@ def main():
                         help='Force retraining even if model exists')
     parser.add_argument('--optimize', action='store_true', 
                         help='Optimize hyperparameters (takes longer but may improve performance)')
+    parser.add_argument('--retrain-interval', type=int, default=0,
+                        help='Retraining interval in hours during backtesting (0 to disable)')
     
     # Analysis options
     parser.add_argument('--compare-timeframes', action='store_true', 
@@ -45,6 +47,7 @@ def main():
     print(f"Model type: {args.model}")
     print(f"Optimize hyperparameters: {args.optimize}")
     print(f"Force retrain: {args.force}")
+    print(f"Retrain interval: {args.retrain_interval} hours {'(disabled)' if args.retrain_interval == 0 else ''}")
     print(f"Initial balance: ${args.initial_balance}")
     print(f"Position size: {args.position_size * 100}%")
     print()
@@ -69,7 +72,8 @@ def main():
         results = trainer.train_all_symbols(
             model_type=args.model,
             force_retrain=args.force,
-            optimize_hyperparams=args.optimize
+            optimize_hyperparams=args.optimize,
+            retrain_interval=args.retrain_interval
         )
         
         # Print summary of all results
@@ -97,4 +101,4 @@ def main():
                 print(f"{symbol:6} | {result.get('total_return_pct', 0):8.2f}% | {result.get('win_rate', 0):7.2f}% | {result.get('profit_factor', 0):12.2f} | {result.get('max_drawdown_pct', 0):12.2f}% | {result.get('sharpe_ratio', 0):6.2f}")
 
 if __name__ == "__main__":
-    main() 
+    main()

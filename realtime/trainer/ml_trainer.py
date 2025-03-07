@@ -98,7 +98,7 @@ class MLTrainer:
         print(f"Fetched {len(df)} candles for {symbol}")
         return df
     
-    def train_and_backtest(self, symbol, model_type='ensemble', force_retrain=False, optimize_hyperparams=True):
+    def train_and_backtest(self, symbol, model_type='ensemble', force_retrain=False, optimize_hyperparams=True, retrain_interval=0):
         """
         Train a model for a symbol and backtest it
         
@@ -107,6 +107,7 @@ class MLTrainer:
             model_type: Type of model to train ('rf', 'gb', 'ensemble')
             force_retrain: Whether to force retraining even if model exists
             optimize_hyperparams: Whether to optimize hyperparameters
+            retrain_interval: Interval in hours to retrain the model during backtesting (0 to disable)
             
         Returns:
             dict: Backtest results
@@ -143,14 +144,22 @@ class MLTrainer:
                          if col not in excluded_columns 
                          and df_features[col].dtype in ['float64', 'int64']]
         
-        # Run backtest
+        # Run backtest with retraining if enabled
         backtest_results = self.ml_manager.backtest_model(
             model, 
             scaler, 
             df_features, 
             feature_columns,
             initial_balance=10000,
-            position_size_pct=0.2
+            position_size_pct=0.2,
+            retrain_interval=retrain_interval,
+            retrain_func=lambda: self.ml_manager.train_advanced_model(
+                symbol, 
+                df, 
+                force_retrain=True,
+                model_type=model_type,
+                optimize_hyperparams=optimize_hyperparams
+            ) if retrain_interval > 0 else None
         )
         
         # Calculate additional metrics if they don't exist
@@ -183,6 +192,11 @@ class MLTrainer:
         print(f"Final Balance: ${backtest_results['final_balance']:.2f}")
         print(f"Total Return: {backtest_results['total_return_pct']:.2f}%")
         
+        if retrain_interval > 0:
+            print(f"Retraining Interval: {retrain_interval} hours")
+            if 'retrain_count' in backtest_results:
+                print(f"Model Retrains: {backtest_results['retrain_count']}")
+        
         if 'annualized_return_pct' in backtest_results:
             print(f"Annualized Return: {backtest_results['annualized_return_pct']:.2f}%")
         
@@ -199,7 +213,7 @@ class MLTrainer:
         
         return backtest_results
     
-    def train_all_symbols(self, model_type='ensemble', force_retrain=False, optimize_hyperparams=True):
+    def train_all_symbols(self, model_type='ensemble', force_retrain=False, optimize_hyperparams=True, retrain_interval=0):
         """
         Train models for all symbols
         
@@ -207,6 +221,7 @@ class MLTrainer:
             model_type: Type of model to train ('rf', 'gb', 'ensemble')
             force_retrain: Whether to force retraining even if model exists
             optimize_hyperparams: Whether to optimize hyperparameters
+            retrain_interval: Interval in hours to retrain the model during backtesting
         """
         results = {}
         
@@ -215,7 +230,8 @@ class MLTrainer:
                 symbol, 
                 model_type=model_type,
                 force_retrain=force_retrain,
-                optimize_hyperparams=optimize_hyperparams
+                optimize_hyperparams=optimize_hyperparams,
+                retrain_interval=retrain_interval
             )
             
         return results
@@ -278,6 +294,7 @@ def main():
     parser.add_argument('--force', action='store_true', help='Force retraining even if model exists')
     parser.add_argument('--optimize', action='store_true', help='Optimize hyperparameters')
     parser.add_argument('--compare-timeframes', action='store_true', help='Compare performance across timeframes')
+    parser.add_argument('--retrain-interval', type=int, default=0, help='Interval in hours to retrain the model during backtesting (0 to disable)')
     
     args = parser.parse_args()
     
@@ -294,7 +311,8 @@ def main():
         trainer.train_all_symbols(
             model_type=args.model,
             force_retrain=args.force,
-            optimize_hyperparams=args.optimize
+            optimize_hyperparams=args.optimize,
+            retrain_interval=args.retrain_interval
         )
 
 if __name__ == "__main__":
