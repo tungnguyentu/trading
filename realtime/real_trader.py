@@ -1077,9 +1077,9 @@ class RealtimeTrader:
         # Adjust position size based on volatility
         # Lower position size when volatility is high, increase when volatility is low
         volatility_adjustment = 1.0
-        if volatility_ratio > 0.03:  # High volatility
+        if (volatility_ratio > 0.03):  # High volatility
             volatility_adjustment = 0.7  # Reduce position size by 30%
-        elif volatility_ratio < 0.01:  # Low volatility
+        elif (volatility_ratio < 0.01):  # Low volatility
             volatility_adjustment = 1.3  # Increase position size by 30%
 
         # Performance adjustment based on recent trades
@@ -3650,7 +3650,7 @@ def run_real_trading(
                 traditional_signal == ml_signal
                 and traditional_signal != 0
                 and realtime_trader.use_ml_signals
-                and ml_confidence >= 0.75
+                and ml_confidence >= realtime_trader.ml_confidence
             ):
                 # Both signals agree and are not neutral
                 signal = traditional_signal
@@ -3817,10 +3817,33 @@ def run_real_trading(
             sleep_time = (next_update - datetime.now()).total_seconds()
 
             if sleep_time > 0:
-                print(
-                    f"Sleeping for {sleep_time:.1f} seconds until next update at {next_update.strftime('%H:%M:%S')}"
-                )
-                time.sleep(sleep_time)
+                print(f"Next update at {next_update.strftime('%H:%M:%S')}")
+                print(f"Next update in {sleep_time:.0f} seconds")
+                print("Countdown started...")
+                
+                # Start countdown timer
+                start_time = time.time()
+                end_wait_time = start_time + sleep_time
+                
+                while time.time() < end_wait_time:
+                    # Calculate remaining time
+                    remaining = end_wait_time - time.time()
+                    mins, secs = divmod(int(remaining), 60)
+                    
+                    # Create progress bar
+                    bar_length = 20
+                    progress = 1 - (remaining / sleep_time)  # Invert so it fills up as we go
+                    progress_pct = progress
+                    filled_len = int(bar_length * progress)
+                    bar = '█' * filled_len + '░' * (bar_length - filled_len)
+                    
+                    # Display countdown
+                    countdown = f"⏱️ Next update in: {mins:02d}:{secs:02d} [{bar}] {progress_pct:.0%}"
+                    print(countdown, end='\r', flush=True)
+                    time.sleep(1)
+                
+                print(" " * 100, end='\r')  # Clear the line
+                print("Updating now...")
             else:
                 print(
                     "Processing took longer than update interval, continuing immediately"
