@@ -887,10 +887,49 @@ class MLManager:
         # Ensure df is sorted by date
         df = df.sort_index()
         
+        # Validate feature columns - make sure all features exist in the dataframe
+        valid_feature_columns = [col for col in feature_columns if col in df.columns]
+        if len(valid_feature_columns) != len(feature_columns):
+            print(f"Warning: {len(feature_columns) - len(valid_feature_columns)} feature columns not found in dataframe")
+            print(f"Missing: {[col for col in feature_columns if col not in df.columns]}")
+        
+        if len(valid_feature_columns) == 0:
+            print("Error: No valid feature columns found for backtesting")
+            return {
+                'initial_balance': initial_balance,
+                'final_balance': initial_balance,
+                'total_return': 0,
+                'total_trades': 0,
+                'win_rate': 0,
+                'profit_factor': 0,
+                'max_drawdown': 0
+            }
+        
+        # Get expected number of features from scaler
+        n_expected_features = scaler.n_features_in_
+        print(f"Model expects {n_expected_features} features, found {len(valid_feature_columns)} valid feature columns")
+        
+        # Check if the number of features matches what the scaler expects
+        if len(valid_feature_columns) != n_expected_features:
+            print("Feature count mismatch - attempting to find correct subset of features")
+            if len(valid_feature_columns) > n_expected_features:
+                # Too many features, use only the first n_expected_features
+                valid_feature_columns = valid_feature_columns[:n_expected_features]
+                print(f"Using first {n_expected_features} features: {valid_feature_columns}")
+            else:
+                print("Error: Not enough features for this model. Consider retraining.")
+                return {
+                    'initial_balance': initial_balance,
+                    'final_balance': initial_balance,
+                    'total_return': 0,
+                    'total_trades': 0,
+                    'win_rate': 0,
+                    'profit_factor': 0,
+                    'max_drawdown': 0
+                }
+        
         # Slice df to have the necessary minimum lookback
-        start_idx = max(feature_columns.count('close_-'), feature_columns.count('ema_-'))
-        if start_idx == 0:
-            start_idx = 20  # Default to a reasonable lookback
+        start_idx = 20  # Default to a reasonable lookback
         
         # Get predictions for each candle
         for i in range(start_idx, len(df)):
@@ -909,26 +948,28 @@ class MLManager:
                     retrain_count += 1
             
             # Get features for the current row
-            X = current_row[feature_columns].values.reshape(1, -1)
+            X = current_row[valid_feature_columns].values.reshape(1, -1)
             
-            # Scale features
-            X_scaled = scaler.transform(X)
-            
-            # Get prediction
-            pred = model.predict(X_scaled)[0]
-            # Get prediction probability
-            pred_proba = model.predict_proba(X_scaled)[0]
-            
-            # Extract confidence score
-            if pred == 1:  # Buy signal
-                confidence = pred_proba[1]  # Probability of class 1
-            elif pred == -1:  # Sell signal
-                confidence = pred_proba[0]  # Probability of class 0 (or first class negative)
-            else:
-                confidence = 0.5  # Neutral
+            try:
+                # Scale features
+                X_scaled = scaler.transform(X)
+                
+                # Get prediction
+                pred = model.predict(X_scaled)[0]
+                # Get prediction probability
+                pred_proba = model.predict_proba(X_scaled)[0]
+                
+                # Extract confidence score
+                if pred == 1:  # Buy signal
+                    confidence = pred_proba[1]  # Probability of class 1
+                else:  # Sell signal (0 or -1)
+                    confidence = pred_proba[0]  # Probability of class 0
+            except Exception as e:
+                print(f"Error during prediction at index {i}: {e}")
+                continue
             
             # Check if we should close position based on prediction
-            if position == 'long' and pred < 0:
+            if position == 'long' and pred == 0:
                 # Close long position
                 profit = position_size * (current_price - entry_price)
                 balance += profit
@@ -945,7 +986,7 @@ class MLManager:
                 })
                 position = None
                 
-            elif position == 'short' and pred > 0:
+            elif position == 'short' and pred == 1:
                 # Close short position
                 profit = position_size * (entry_price - current_price)
                 balance += profit
@@ -964,14 +1005,14 @@ class MLManager:
             
             # Check if we should open a new position
             if position is None and confidence >= 0.55:  # Only enter with sufficient confidence
-                if pred > 0:  # Buy signal
+                if pred == 1:  # Buy signal
                     # Open long position
                     position = 'long'
                     entry_price = current_price
                     position_size = balance * position_size_pct / current_price
                     entry_date = current_time
                     
-                elif pred < 0:  # Sell signal
+                elif pred == 0:  # Sell signal
                     # Open short position
                     position = 'short'
                     entry_price = current_price
