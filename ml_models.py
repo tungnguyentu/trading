@@ -854,201 +854,224 @@ class MLManager:
             traceback.print_exc()
             return None, None
 
-    def backtest_model(self, model, scaler, df, feature_columns, initial_balance=10000, position_size_pct=0.2):
+    def backtest_model(self, model, scaler, df, feature_columns, initial_balance=10000, position_size_pct=0.2, retrain_interval=0, retrain_func=None):
         """
-        Backtest the model on historical data
+        Backtest a trained model
         
         Args:
-            model: Trained model
+            model: Trained ML model
             scaler: Feature scaler
-            df: DataFrame with historical data
+            df: DataFrame with features
             feature_columns: List of feature columns
-            initial_balance: Initial account balance for backtesting
-            position_size_pct: Percentage of balance to use per trade
+            initial_balance: Initial balance for backtesting
+            position_size_pct: Position size as percentage of balance
+            retrain_interval: Interval in hours to retrain the model (0 to disable)
+            retrain_func: Function to call for retraining the model
             
         Returns:
             dict: Backtest results
         """
-        print("\n--- Running Backtest ---")
+        print("Backtesting model...")
         
-        # Initialize backtest variables
+        # Initialize variables
         balance = initial_balance
         position = None
         entry_price = 0
+        position_size = 0
         trades = []
-        equity_curve = []
+        equity = [initial_balance]
+        equity_timestamps = [df.index[0]]
+        last_retrain_time = None
+        retrain_count = 0
         
-        # Make sure df is sorted by time
+        # Ensure df is sorted by date
         df = df.sort_index()
         
-        # Track performance metrics
-        total_trades = 0
-        winning_trades = 0
-        losing_trades = 0
-        profit_factor = 0
-        total_profit = 0
-        total_loss = 0
-        max_drawdown = 0
-        max_balance = initial_balance
-        peak_balance = initial_balance
+        # Slice df to have the necessary minimum lookback
+        start_idx = max(feature_columns.count('close_-'), feature_columns.count('ema_-'))
+        if start_idx == 0:
+            start_idx = 20  # Default to a reasonable lookback
         
-        # Process each candle
-        for i in range(1, len(df) - 1):  # Skip first and last rows
-            current_date = df.index[i] if df.index.name else df.iloc[i].name
-            current_price = df['close'].iloc[i]
+        # Get predictions for each candle
+        for i in range(start_idx, len(df)):
+            current_time = df.index[i]
+            current_row = df.iloc[i]
             
-            # Add current balance to equity curve
-            equity_curve.append((current_date, balance))
+            # Get current price
+            current_price = current_row['close']
             
-            # Check for stop loss or take profit if in position
-            if position:
-                # Calculate profit/loss
-                if position == 'long':
-                    profit = (current_price - entry_price) / entry_price
-                else:  # short
-                    profit = (entry_price - current_price) / entry_price
-                    
-                # Exit signals - simple 2% stop loss and 3% take profit
-                stop_loss = -0.02
-                take_profit = 0.03
-                
-                # Check for exit conditions
-                exit_reason = None
-                if profit <= stop_loss:
-                    exit_reason = "stop_loss"
-                elif profit >= take_profit:
-                    exit_reason = "take_profit"
-                    
-                if exit_reason:
-                    # Close position
-                    position_value = balance * position_size_pct
-                    pnl = position_value * profit
-                    balance += pnl
-                    
-                    # Track maximum drawdown
-                    if balance > peak_balance:
-                        peak_balance = balance
-                    drawdown = (peak_balance - balance) / peak_balance
-                    max_drawdown = max(max_drawdown, drawdown)
-                    
-                    # Record trade
-                    trades.append({
-                        'entry_date': entry_date,
-                        'exit_date': current_date,
-                        'position': position,
-                        'entry_price': entry_price,
-                        'exit_price': current_price,
-                        'profit_pct': profit * 100,
-                        'profit_amount': pnl,
-                        'exit_reason': exit_reason,
-                        'balance': balance
-                    })
-                    
-                    # Update metrics
-                    total_trades += 1
-                    if pnl > 0:
-                        winning_trades += 1
-                        total_profit += pnl
-                    else:
-                        losing_trades += 1
-                        total_loss += abs(pnl)
-                        
-                    # Reset position
-                    position = None
-                    max_balance = max(max_balance, balance)
+            # Handle retraining if enabled
+            if retrain_interval > 0 and retrain_func is not None:
+                if last_retrain_time is None or (current_time - last_retrain_time).total_seconds() / 3600 >= retrain_interval:
+                    print(f"Retraining model at {current_time}")
+                    model, scaler = retrain_func()
+                    last_retrain_time = current_time
+                    retrain_count += 1
             
-            # Generate new prediction if not in a position
-            if not position:
-                # Prepare features
-                features = df.iloc[i:i+1][feature_columns]
+            # Get features for the current row
+            X = current_row[feature_columns].values.reshape(1, -1)
+            
+            # Scale features
+            X_scaled = scaler.transform(X)
+            
+            # Get prediction
+            pred = model.predict(X_scaled)[0]
+            # Get prediction probability
+            pred_proba = model.predict_proba(X_scaled)[0]
+            
+            # Extract confidence score
+            if pred == 1:  # Buy signal
+                confidence = pred_proba[1]  # Probability of class 1
+            elif pred == -1:  # Sell signal
+                confidence = pred_proba[0]  # Probability of class 0 (or first class negative)
+            else:
+                confidence = 0.5  # Neutral
+            
+            # Check if we should close position based on prediction
+            if position == 'long' and pred < 0:
+                # Close long position
+                profit = position_size * (current_price - entry_price)
+                balance += profit
+                trades.append({
+                    'type': 'long',
+                    'entry_price': entry_price,
+                    'exit_price': current_price,
+                    'entry_date': entry_date,
+                    'exit_date': current_time,
+                    'position_size': position_size,
+                    'profit_amount': profit,
+                    'profit_pct': (current_price / entry_price - 1) * 100,
+                    'balance': balance
+                })
+                position = None
                 
-                # Scale features
-                features_scaled = scaler.transform(features)
-                
-                # Get prediction
-                prediction = model.predict(features_scaled)[0]
-                proba = model.predict_proba(features_scaled)[0]
-                confidence = max(proba)
-                
-                # Only enter position with high confidence
-                if confidence >= 0.6:
-                    if prediction == 1:  # Bullish prediction
-                        position = 'long'
-                        entry_price = current_price
-                        entry_date = current_date
-                    elif prediction == 0:  # Bearish prediction
-                        position = 'short'
-                        entry_price = current_price
-                        entry_date = current_date
+            elif position == 'short' and pred > 0:
+                # Close short position
+                profit = position_size * (entry_price - current_price)
+                balance += profit
+                trades.append({
+                    'type': 'short',
+                    'entry_price': entry_price,
+                    'exit_price': current_price,
+                    'entry_date': entry_date,
+                    'exit_date': current_time,
+                    'position_size': position_size,
+                    'profit_amount': profit,
+                    'profit_pct': (entry_price / current_price - 1) * 100,
+                    'balance': balance
+                })
+                position = None
+            
+            # Check if we should open a new position
+            if position is None and confidence >= 0.55:  # Only enter with sufficient confidence
+                if pred > 0:  # Buy signal
+                    # Open long position
+                    position = 'long'
+                    entry_price = current_price
+                    position_size = balance * position_size_pct / current_price
+                    entry_date = current_time
+                    
+                elif pred < 0:  # Sell signal
+                    # Open short position
+                    position = 'short'
+                    entry_price = current_price
+                    position_size = balance * position_size_pct / current_price
+                    entry_date = current_time
+            
+            # Update equity curve
+            equity.append(balance)
+            equity_timestamps.append(current_time)
         
         # Close any open position at the end
-        if position:
-            final_price = df['close'].iloc[-1]
-            
-            # Calculate profit/loss
-            if position == 'long':
-                profit = (final_price - entry_price) / entry_price
-            else:  # short
-                profit = (entry_price - final_price) / entry_price
-                
-            # Update balance
-            position_value = balance * position_size_pct
-            pnl = position_value * profit
-            balance += pnl
-            
-            # Record trade
+        if position == 'long':
+            profit = position_size * (current_price - entry_price)
+            balance += profit
             trades.append({
-                'entry_date': entry_date,
-                'exit_date': df.index[-1] if df.index.name else df.iloc[-1].name,
-                'position': position,
+                'type': 'long',
                 'entry_price': entry_price,
-                'exit_price': final_price,
-                'profit_pct': profit * 100,
-                'profit_amount': pnl,
-                'exit_reason': 'end_of_data',
+                'exit_price': current_price,
+                'entry_date': entry_date,
+                'exit_date': current_time,
+                'position_size': position_size,
+                'profit_amount': profit,
+                'profit_pct': (current_price / entry_price - 1) * 100,
                 'balance': balance
             })
             
-            # Update metrics
-            total_trades += 1
-            if pnl > 0:
-                winning_trades += 1
-                total_profit += pnl
-            else:
-                losing_trades += 1
-                total_loss += abs(pnl)
+        elif position == 'short':
+            profit = position_size * (entry_price - current_price)
+            balance += profit
+            trades.append({
+                'type': 'short',
+                'entry_price': entry_price,
+                'exit_price': current_price,
+                'entry_date': entry_date,
+                'exit_date': current_time,
+                'position_size': position_size,
+                'profit_amount': profit,
+                'profit_pct': (entry_price / current_price - 1) * 100,
+                'balance': balance
+            })
         
-        # Calculate final metrics
-        win_rate = winning_trades / total_trades if total_trades > 0 else 0
-        profit_factor = total_profit / total_loss if total_loss > 0 else float('inf')
-        total_return = ((balance - initial_balance) / initial_balance) * 100
+        # Calculate results
+        win_trades = sum(1 for trade in trades if trade['profit_amount'] > 0)
+        loss_trades = sum(1 for trade in trades if trade['profit_amount'] < 0)
         
-        # Plot equity curve
-        if trades:
-            self._plot_equity_curve(equity_curve, trades)
+        if len(trades) > 0:
+            win_rate = win_trades / len(trades) * 100
+        else:
+            win_rate = 0
         
-        # Print backtest results
-        print("\nBacktest Results:")
-        print(f"Total Return: {total_return:.2f}%")
-        print(f"Total Trades: {total_trades}")
-        print(f"Win Rate: {win_rate:.2f}%")
-        print(f"Profit Factor: {profit_factor:.2f}")
-        print(f"Max Drawdown: {max_drawdown:.2f}%")
+        # Calculate profit factor
+        total_profit = sum(trade['profit_amount'] for trade in trades if trade['profit_amount'] > 0)
+        total_loss = sum(abs(trade['profit_amount']) for trade in trades if trade['profit_amount'] < 0)
         
-        backtest_results = {
-            'total_return': total_return,
+        if total_loss > 0:
+            profit_factor = total_profit / total_loss
+        else:
+            profit_factor = float('inf') if total_profit > 0 else 0
+        
+        # Calculate maximum drawdown
+        max_balance = initial_balance
+        max_drawdown = 0
+        
+        for i, trade_balance in enumerate(equity):
+            if trade_balance > max_balance:
+                max_balance = trade_balance
+            drawdown = (max_balance - trade_balance) / max_balance
+            max_drawdown = max(max_drawdown, drawdown)
+        
+        # Convert to percentage
+        max_drawdown_pct = max_drawdown * 100
+        
+        # Calculate total return
+        if initial_balance > 0:
+            total_return_pct = (balance / initial_balance - 1) * 100
+        else:
+            total_return_pct = 0
+        
+        # Save results
+        results = {
             'initial_balance': initial_balance,
             'final_balance': balance,
-            'total_trades': total_trades,
-            'winning_trades': winning_trades,
-            'losing_trades': losing_trades,
+            'total_return': total_return_pct,
+            'total_return_pct': total_return_pct,
+            'total_trades': len(trades),
+            'win_trades': win_trades,
+            'loss_trades': loss_trades,
             'win_rate': win_rate,
             'profit_factor': profit_factor,
-            'max_drawdown': max_drawdown,
+            'max_drawdown': max_drawdown_pct,
+            'max_drawdown_pct': max_drawdown_pct,
             'trades': trades
         }
         
-        return backtest_results
+        # Add retraining information if used
+        if retrain_interval > 0:
+            results['retrain_interval'] = retrain_interval
+            results['retrain_count'] = retrain_count
+        
+        return results
 
     def _plot_equity_curve(self, equity_curve, trades):
         """Plot equity curve and trades"""
