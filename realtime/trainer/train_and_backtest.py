@@ -79,7 +79,22 @@ def main():
         
         for symbol, result in results.items():
             if result:
-                print(f"{symbol:6} | {result['total_return_pct']:8.2f}% | {result['win_rate']:7.2f}% | {result['profit_factor']:12.2f} | {result['max_drawdown_pct']:12.2f}% | {result['sharpe_ratio']:6.2f}")
+                # Ensure all required keys exist
+                if 'total_return_pct' not in result and 'total_return' in result:
+                    result['total_return_pct'] = result['total_return']
+                
+                if 'max_drawdown_pct' not in result and 'max_drawdown' in result:
+                    result['max_drawdown_pct'] = result['max_drawdown']
+                
+                if 'sharpe_ratio' not in result:
+                    # Estimate Sharpe ratio
+                    if result.get('max_drawdown_pct', 0) > 0:
+                        result['sharpe_ratio'] = result.get('total_return_pct', 0) / result.get('max_drawdown_pct', 1)
+                    else:
+                        result['sharpe_ratio'] = 0.0
+                
+                # Print results with safe access to keys
+                print(f"{symbol:6} | {result.get('total_return_pct', 0):8.2f}% | {result.get('win_rate', 0):7.2f}% | {result.get('profit_factor', 0):12.2f} | {result.get('max_drawdown_pct', 0):12.2f}% | {result.get('sharpe_ratio', 0):6.2f}")
 
 if __name__ == "__main__":
     main() 

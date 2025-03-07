@@ -1,1 +1,10 @@
 .env
+models
+venv
+*.pyc
+*.pyo
+*.pyd
+*.pyw
+*.pyz
+*.pywz
+*.pyzw

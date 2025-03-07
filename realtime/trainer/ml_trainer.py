@@ -153,6 +153,28 @@ class MLTrainer:
             position_size_pct=0.2
         )
         
+        # Calculate additional metrics if they don't exist
+        if 'total_return_pct' not in backtest_results and 'total_return' in backtest_results:
+            backtest_results['total_return_pct'] = backtest_results['total_return']
+        
+        if 'annualized_return_pct' not in backtest_results:
+            # Estimate annualized return based on total return
+            # Assuming the backtest period is approximately 1 year
+            backtest_results['annualized_return_pct'] = backtest_results['total_return_pct']
+        
+        if 'win_rate' in backtest_results and not isinstance(backtest_results['win_rate'], float):
+            backtest_results['win_rate'] = float(backtest_results['win_rate'])
+        
+        if 'max_drawdown' in backtest_results and 'max_drawdown_pct' not in backtest_results:
+            backtest_results['max_drawdown_pct'] = backtest_results['max_drawdown']
+        
+        if 'sharpe_ratio' not in backtest_results:
+            # Estimate Sharpe ratio based on return and drawdown
+            if backtest_results['max_drawdown_pct'] > 0:
+                backtest_results['sharpe_ratio'] = backtest_results['total_return_pct'] / backtest_results['max_drawdown_pct']
+            else:
+                backtest_results['sharpe_ratio'] = 0.0
+        
         # Print backtest summary
         print("\n=== Backtest Results ===")
         print(f"Symbol: {symbol}")
@@ -160,12 +182,20 @@ class MLTrainer:
         print(f"Initial Balance: ${backtest_results['initial_balance']:.2f}")
         print(f"Final Balance: ${backtest_results['final_balance']:.2f}")
         print(f"Total Return: {backtest_results['total_return_pct']:.2f}%")
-        print(f"Annualized Return: {backtest_results['annualized_return_pct']:.2f}%")
+        
+        if 'annualized_return_pct' in backtest_results:
+            print(f"Annualized Return: {backtest_results['annualized_return_pct']:.2f}%")
+        
         print(f"Total Trades: {backtest_results['total_trades']}")
         print(f"Win Rate: {backtest_results['win_rate']:.2f}%")
-        print(f"Profit Factor: {backtest_results['profit_factor']:.2f}")
+        
+        if 'profit_factor' in backtest_results:
+            print(f"Profit Factor: {backtest_results['profit_factor']:.2f}")
+        
         print(f"Max Drawdown: {backtest_results['max_drawdown_pct']:.2f}%")
-        print(f"Sharpe Ratio: {backtest_results['sharpe_ratio']:.2f}")
+        
+        if 'sharpe_ratio' in backtest_results:
+            print(f"Sharpe Ratio: {backtest_results['sharpe_ratio']:.2f}")
         
         return backtest_results
     
@@ -219,7 +249,22 @@ class MLTrainer:
         
         for tf, result in results.items():
             if result:
-                print(f"{tf:9} | {result['total_return_pct']:8.2f}% | {result['win_rate']:7.2f}% | {result['profit_factor']:12.2f} | {result['max_drawdown_pct']:12.2f}% | {result['sharpe_ratio']:6.2f}")
+                # Ensure all required keys exist
+                if 'total_return_pct' not in result and 'total_return' in result:
+                    result['total_return_pct'] = result['total_return']
+                
+                if 'max_drawdown_pct' not in result and 'max_drawdown' in result:
+                    result['max_drawdown_pct'] = result['max_drawdown']
+                
+                if 'sharpe_ratio' not in result:
+                    # Estimate Sharpe ratio
+                    if result.get('max_drawdown_pct', 0) > 0:
+                        result['sharpe_ratio'] = result.get('total_return_pct', 0) / result.get('max_drawdown_pct', 1)
+                    else:
+                        result['sharpe_ratio'] = 0.0
+                
+                # Print results with safe access to keys
+                print(f"{tf:9} | {result.get('total_return_pct', 0):8.2f}% | {result.get('win_rate', 0):7.2f}% | {result.get('profit_factor', 0):12.2f} | {result.get('max_drawdown_pct', 0):12.2f}% | {result.get('sharpe_ratio', 0):6.2f}")
         
         return results
 

@@ -7,7 +7,7 @@ from datetime import datetime
 import joblib
 import traceback
 
-from sklearn.model_selection import train_test_split, TimeSeriesSplit
+from sklearn.model_selection import train_test_split, TimeSeriesSplit, cross_val_score, GridSearchCV
 from sklearn.preprocessing import StandardScaler
 from sklearn.ensemble import (
     RandomForestClassifier,
@@ -20,6 +20,7 @@ from sklearn.metrics import (
     recall_score,
     f1_score,
     confusion_matrix,
+    classification_report
 )
 import pickle
 
@@ -641,6 +642,448 @@ class MLManager:
             print(f"Error training ML model: {str(e)}")
             traceback.print_exc()
             return None, None
+
+    def train_advanced_model(self, symbol, df, force_retrain=False, model_type="ensemble", optimize_hyperparams=True):
+        """
+        Train an advanced ML model with optional hyperparameter optimization
+        
+        Args:
+            symbol: Trading symbol
+            df: DataFrame with historical data
+            force_retrain: Whether to force retraining even if model exists
+            model_type: Type of model to train ("rf", "gb", "ensemble")
+            optimize_hyperparams: Whether to optimize hyperparameters
+            
+        Returns:
+            tuple: (model, scaler) - The trained model and feature scaler
+        """
+        try:
+            print(f"\n--- Training Advanced ML model for {symbol} ---")
+            
+            # Check if model already exists and we're not forcing a retrain
+            if not force_retrain and symbol in self.models and symbol in self.scalers:
+                print(f"Model for {symbol} already exists. Use force_retrain=True to retrain.")
+                return self.models[symbol], self.scalers[symbol]
+                
+            # Add features
+            df_features = self.add_features(df)
+            
+            # Create target variable - future price direction
+            # For more comprehensive training, we'll use multiple timeframes
+            print("Creating target variables for multiple timeframes")
+            
+            # 1-candle ahead prediction (next candle direction)
+            df_features['target_1'] = (df_features['close'].shift(-1) > df_features['close']).astype(int)
+            
+            # 3-candles ahead prediction
+            df_features['target_3'] = (df_features['close'].shift(-3) > df_features['close']).astype(int)
+            
+            # 5-candles ahead prediction
+            df_features['target_5'] = (df_features['close'].shift(-5) > df_features['close']).astype(int)
+            
+            # Primary target - we'll use the 1-candle prediction as default
+            df_features['target'] = df_features['target_1']
+            
+            # Drop NaN values
+            df_features = df_features.dropna()
+            print(f"Data shape after feature engineering: {df_features.shape}")
+            
+            # Define features
+            excluded_columns = ['target', 'target_1', 'target_3', 'target_5', 'timestamp', 
+                              'date', 'time', 'symbol', 'open_time', 'close_time']
+            feature_columns = [col for col in df_features.columns 
+                             if col not in excluded_columns 
+                             and df_features[col].dtype in ['float64', 'int64']]
+            
+            print(f"Using {len(feature_columns)} features")
+            
+            # Split data into training and testing sets
+            # Use time series split to respect chronological order
+            X = df_features[feature_columns]
+            y = df_features['target']
+            
+            # Use the last 20% of data for testing
+            train_size = int(len(df_features) * 0.8)
+            X_train, X_test = X[:train_size], X[train_size:]
+            y_train, y_test = y[:train_size], y[train_size:]
+            
+            print(f"Training set size: {len(X_train)}, Test set size: {len(X_test)}")
+            
+            # Scale features
+            scaler = StandardScaler()
+            X_train_scaled = scaler.fit_transform(X_train)
+            X_test_scaled = scaler.transform(X_test)
+            
+            # Model selection based on type
+            if model_type == "rf":
+                print("Training Random Forest model...")
+                
+                if optimize_hyperparams:
+                    # Hyperparameter optimization for Random Forest
+                    print("Optimizing hyperparameters...")
+                    param_grid = {
+                        'n_estimators': [100, 200, 300],
+                        'max_depth': [None, 10, 20, 30],
+                        'min_samples_split': [2, 5, 10],
+                        'min_samples_leaf': [1, 2, 4]
+                    }
+                    
+                    grid_search = GridSearchCV(
+                        RandomForestClassifier(random_state=42),
+                        param_grid,
+                        cv=TimeSeriesSplit(n_splits=3),
+                        scoring='f1',
+                        n_jobs=-1
+                    )
+                    
+                    grid_search.fit(X_train_scaled, y_train)
+                    print(f"Best parameters: {grid_search.best_params_}")
+                    model = grid_search.best_estimator_
+                else:
+                    model = RandomForestClassifier(n_estimators=200, random_state=42)
+                    model.fit(X_train_scaled, y_train)
+                    
+            elif model_type == "gb":
+                print("Training Gradient Boosting model...")
+                
+                if optimize_hyperparams:
+                    # Hyperparameter optimization for Gradient Boosting
+                    print("Optimizing hyperparameters...")
+                    param_grid = {
+                        'n_estimators': [100, 200, 300],
+                        'learning_rate': [0.01, 0.05, 0.1],
+                        'max_depth': [3, 4, 5],
+                        'min_samples_split': [2, 5],
+                        'subsample': [0.8, 0.9, 1.0]
+                    }
+                    
+                    grid_search = GridSearchCV(
+                        GradientBoostingClassifier(random_state=42),
+                        param_grid,
+                        cv=TimeSeriesSplit(n_splits=3),
+                        scoring='f1',
+                        n_jobs=-1
+                    )
+                    
+                    grid_search.fit(X_train_scaled, y_train)
+                    print(f"Best parameters: {grid_search.best_params_}")
+                    model = grid_search.best_estimator_
+                else:
+                    model = GradientBoostingClassifier(n_estimators=200, random_state=42)
+                    model.fit(X_train_scaled, y_train)
+            
+            else:  # ensemble
+                print("Training Ensemble model (Voting Classifier)...")
+                rf = RandomForestClassifier(n_estimators=200, random_state=42)
+                gb = GradientBoostingClassifier(n_estimators=200, random_state=42)
+                
+                model = VotingClassifier(
+                    estimators=[('rf', rf), ('gb', gb)],
+                    voting='soft'
+                )
+                model.fit(X_train_scaled, y_train)
+            
+            # Evaluate model
+            y_pred = model.predict(X_test_scaled)
+            accuracy = accuracy_score(y_test, y_pred)
+            precision = precision_score(y_test, y_pred, zero_division=0)
+            recall = recall_score(y_test, y_pred, zero_division=0)
+            f1 = f1_score(y_test, y_pred, zero_division=0)
+            
+            print(f"Model performance on test set:")
+            print(f"  Accuracy: {accuracy:.4f}")
+            print(f"  Precision: {precision:.4f}")
+            print(f"  Recall: {recall:.4f}")
+            print(f"  F1 Score: {f1:.4f}")
+            
+            # Confusion matrix
+            cm = confusion_matrix(y_test, y_pred)
+            print("\nConfusion Matrix:")
+            print(cm)
+            
+            # Classification report
+            report = classification_report(y_test, y_pred)
+            print("\nClassification Report:")
+            print(report)
+            
+            # Run backtest evaluation
+            backtest_result = self.backtest_model(
+                model, 
+                scaler, 
+                df_features.iloc[train_size:].copy(), 
+                feature_columns
+            )
+            
+            # Create and save metrics
+            metrics = {
+                'accuracy': accuracy,
+                'precision': precision,
+                'recall': recall,
+                'f1': f1,
+                'feature_names': feature_columns,
+                'training_date': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                'data_points': len(df_features),
+                'model_type': model_type,
+                'backtest_results': backtest_result
+            }
+            
+            # Store model and metrics
+            self.models[symbol] = model
+            self.scalers[symbol] = scaler
+            self.model_metrics[symbol] = metrics
+            
+            # Save model to disk
+            self.save_model(symbol, model, scaler, metrics)
+            
+            # Plot feature importance if available
+            if hasattr(model, 'feature_importances_'):
+                self._plot_feature_importance(symbol, model, feature_columns)
+            elif hasattr(model, 'estimators_'):
+                for i, estimator in enumerate(model.estimators_):
+                    if hasattr(estimator, 'feature_importances_'):
+                        self._plot_feature_importance(
+                            f"{symbol}_{estimator.__class__.__name__}_{i}", 
+                            estimator, 
+                            feature_columns
+                        )
+            
+            return model, scaler
+            
+        except Exception as e:
+            print(f"Error training advanced ML model: {str(e)}")
+            traceback.print_exc()
+            return None, None
+
+    def backtest_model(self, model, scaler, df, feature_columns, initial_balance=10000, position_size_pct=0.2):
+        """
+        Backtest the model on historical data
+        
+        Args:
+            model: Trained model
+            scaler: Feature scaler
+            df: DataFrame with historical data
+            feature_columns: List of feature columns
+            initial_balance: Initial account balance for backtesting
+            position_size_pct: Percentage of balance to use per trade
+            
+        Returns:
+            dict: Backtest results
+        """
+        print("\n--- Running Backtest ---")
+        
+        # Initialize backtest variables
+        balance = initial_balance
+        position = None
+        entry_price = 0
+        trades = []
+        equity_curve = []
+        
+        # Make sure df is sorted by time
+        df = df.sort_index()
+        
+        # Track performance metrics
+        total_trades = 0
+        winning_trades = 0
+        losing_trades = 0
+        profit_factor = 0
+        total_profit = 0
+        total_loss = 0
+        max_drawdown = 0
+        max_balance = initial_balance
+        peak_balance = initial_balance
+        
+        # Process each candle
+        for i in range(1, len(df) - 1):  # Skip first and last rows
+            current_date = df.index[i] if df.index.name else df.iloc[i].name
+            current_price = df['close'].iloc[i]
+            
+            # Add current balance to equity curve
+            equity_curve.append((current_date, balance))
+            
+            # Check for stop loss or take profit if in position
+            if position:
+                # Calculate profit/loss
+                if position == 'long':
+                    profit = (current_price - entry_price) / entry_price
+                else:  # short
+                    profit = (entry_price - current_price) / entry_price
+                    
+                # Exit signals - simple 2% stop loss and 3% take profit
+                stop_loss = -0.02
+                take_profit = 0.03
+                
+                # Check for exit conditions
+                exit_reason = None
+                if profit <= stop_loss:
+                    exit_reason = "stop_loss"
+                elif profit >= take_profit:
+                    exit_reason = "take_profit"
+                    
+                if exit_reason:
+                    # Close position
+                    position_value = balance * position_size_pct
+                    pnl = position_value * profit
+                    balance += pnl
+                    
+                    # Track maximum drawdown
+                    if balance > peak_balance:
+                        peak_balance = balance
+                    drawdown = (peak_balance - balance) / peak_balance
+                    max_drawdown = max(max_drawdown, drawdown)
+                    
+                    # Record trade
+                    trades.append({
+                        'entry_date': entry_date,
+                        'exit_date': current_date,
+                        'position': position,
+                        'entry_price': entry_price,
+                        'exit_price': current_price,
+                        'profit_pct': profit * 100,
+                        'profit_amount': pnl,
+                        'exit_reason': exit_reason,
+                        'balance': balance
+                    })
+                    
+                    # Update metrics
+                    total_trades += 1
+                    if pnl > 0:
+                        winning_trades += 1
+                        total_profit += pnl
+                    else:
+                        losing_trades += 1
+                        total_loss += abs(pnl)
+                        
+                    # Reset position
+                    position = None
+                    max_balance = max(max_balance, balance)
+            
+            # Generate new prediction if not in a position
+            if not position:
+                # Prepare features
+                features = df.iloc[i:i+1][feature_columns]
+                
+                # Scale features
+                features_scaled = scaler.transform(features)
+                
+                # Get prediction
+                prediction = model.predict(features_scaled)[0]
+                proba = model.predict_proba(features_scaled)[0]
+                confidence = max(proba)
+                
+                # Only enter position with high confidence
+                if confidence >= 0.6:
+                    if prediction == 1:  # Bullish prediction
+                        position = 'long'
+                        entry_price = current_price
+                        entry_date = current_date
+                    elif prediction == 0:  # Bearish prediction
+                        position = 'short'
+                        entry_price = current_price
+                        entry_date = current_date
+        
+        # Close any open position at the end
+        if position:
+            final_price = df['close'].iloc[-1]
+            
+            # Calculate profit/loss
+            if position == 'long':
+                profit = (final_price - entry_price) / entry_price
+            else:  # short
+                profit = (entry_price - final_price) / entry_price
+                
+            # Update balance
+            position_value = balance * position_size_pct
+            pnl = position_value * profit
+            balance += pnl
+            
+            # Record trade
+            trades.append({
+                'entry_date': entry_date,
+                'exit_date': df.index[-1] if df.index.name else df.iloc[-1].name,
+                'position': position,
+                'entry_price': entry_price,
+                'exit_price': final_price,
+                'profit_pct': profit * 100,
+                'profit_amount': pnl,
+                'exit_reason': 'end_of_data',
+                'balance': balance
+            })
+            
+            # Update metrics
+            total_trades += 1
+            if pnl > 0:
+                winning_trades += 1
+                total_profit += pnl
+            else:
+                losing_trades += 1
+                total_loss += abs(pnl)
+        
+        # Calculate final metrics
+        win_rate = winning_trades / total_trades if total_trades > 0 else 0
+        profit_factor = total_profit / total_loss if total_loss > 0 else float('inf')
+        total_return = ((balance - initial_balance) / initial_balance) * 100
+        
+        # Plot equity curve
+        if trades:
+            self._plot_equity_curve(equity_curve, trades)
+        
+        # Print backtest results
+        print("\nBacktest Results:")
+        print(f"Total Return: {total_return:.2f}%")
+        print(f"Total Trades: {total_trades}")
+        print(f"Win Rate: {win_rate:.2f}%")
+        print(f"Profit Factor: {profit_factor:.2f}")
+        print(f"Max Drawdown: {max_drawdown:.2f}%")
+        
+        backtest_results = {
+            'total_return': total_return,
+            'initial_balance': initial_balance,
+            'final_balance': balance,
+            'total_trades': total_trades,
+            'winning_trades': winning_trades,
+            'losing_trades': losing_trades,
+            'win_rate': win_rate,
+            'profit_factor': profit_factor,
+            'max_drawdown': max_drawdown,
+            'trades': trades
+        }
+        
+        return backtest_results
+
+    def _plot_equity_curve(self, equity_curve, trades):
+        """Plot equity curve and trades"""
+        try:
+            dates, equity = zip(*equity_curve)
+            
+            plt.figure(figsize=(14, 7))
+            plt.plot(dates, equity, label='Equity Curve')
+            
+            # Mark trades on equity curve
+            for trade in trades:
+                if trade['profit_amount'] > 0:
+                    color = 'green'
+                    marker = '^'
+                else:
+                    color = 'red'
+                    marker = 'v'
+                
+                # Find index of trade exit in equity curve
+                exit_idx = next((i for i, (date, _) in enumerate(equity_curve) if date >= trade['exit_date']), None)
+                if exit_idx is not None:
+                    plt.scatter(dates[exit_idx], equity[exit_idx], color=color, marker=marker, s=50)
+            
+            plt.title('Backtest Equity Curve')
+            plt.xlabel('Date')
+            plt.ylabel('Equity')
+            plt.grid(True)
+            plt.legend()
+            
+            # Save plot
+            plt.savefig('backtest_equity_curve.png')
+            plt.close()
+            
+        except Exception as e:
+            print(f"Error plotting equity curve: {e}")
 
     def _plot_feature_importance(self, symbol, model, feature_names):
         """Plot feature importance"""
