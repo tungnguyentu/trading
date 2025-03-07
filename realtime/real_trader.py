@@ -1036,90 +1036,78 @@ class RealtimeTrader:
         return 0.001
 
     def calculate_dynamic_position_size(self, current_price, atr_value=None):
-        """
-        Calculate position size dynamically based on volatility and recent performance
-
-        Args:
-            current_price: Current price of the asset
-            atr_value: Average True Range value (if None, will be calculated)
-
-        Returns:
-            Adjusted position size
-        """
+        """Calculate position size dynamically based on volatility and market conditions"""
         # Get base position size using current method
         base_position_size = self.calculate_position_size(current_price)
-
-        # If no ATR provided, use a default volatility adjustment
+        
+        # Get latest data for analysis
+        latest_df = self.get_latest_data(lookback_candles=20)
+        if latest_df is None or len(latest_df) < 20:
+            return base_position_size
+            
+        # Calculate ATR if not provided
         if atr_value is None:
-            # Get latest data to calculate ATR
-            latest_df = self.get_latest_data(lookback_candles=14)
-            if latest_df is not None and len(latest_df) >= 14:
-                # Calculate ATR
-                high = latest_df["high"].values
-                low = latest_df["low"].values
-                close = latest_df["close"].values
-
-                # Calculate True Range
-                tr1 = np.abs(high[1:] - low[1:])
-                tr2 = np.abs(high[1:] - close[:-1])
-                tr3 = np.abs(low[1:] - close[:-1])
-                tr = np.maximum(np.maximum(tr1, tr2), tr3)
-
-                # 14-period ATR
-                atr_value = np.mean(tr[-14:])
-            else:
-                # Default to 2% volatility if we can't calculate ATR
-                atr_value = current_price * 0.02
-
+            atr_value = latest_df['ATR'].iloc[-1] if 'ATR' in latest_df.columns else (current_price * 0.02)
+            
         # Calculate volatility ratio (ATR as percentage of price)
         volatility_ratio = atr_value / current_price
-
+        
+        # Get market trend info
+        trend_direction, trend_strength = self.analyze_market_trend()
+        
+        # Calculate trend alignment factor (0.5 to 1.5)
+        if self.position == "long":
+            trend_factor = 1.0 + (trend_strength/100 * 0.5) if trend_direction == 1 else 1.0 - (trend_strength/100 * 0.5)
+        else:  # short
+            trend_factor = 1.0 + (trend_strength/100 * 0.5) if trend_direction == -1 else 1.0 - (trend_strength/100 * 0.5)
+            
         # Adjust position size based on volatility
-        # Lower position size when volatility is high, increase when volatility is low
         volatility_adjustment = 1.0
         if volatility_ratio > 0.03:  # High volatility
-            volatility_adjustment = 0.7  # Reduce position size by 30%
+            volatility_adjustment = 0.6  # Reduce position size by 40%
+        elif volatility_ratio > 0.02:  # Medium-high volatility
+            volatility_adjustment = 0.8  # Reduce position size by 20%
         elif volatility_ratio < 0.01:  # Low volatility
-            volatility_adjustment = 1.3  # Increase position size by 30%
-
+            volatility_adjustment = 1.2  # Increase position size by 20%
+            
         # Performance adjustment based on recent trades
         performance_adjustment = 1.0
-        if len(self.trade_history) >= 3:
-            # Get last 3 trades
-            recent_trades = self.trade_history[-3:]
-            profitable_trades = sum(
-                1 for trade in recent_trades if trade.get("profit", 0) > 0
-            )
-
-            if profitable_trades == 3:
-                # All recent trades profitable, increase size
+        if len(self.trade_history) >= 5:
+            recent_trades = self.trade_history[-5:]
+            profitable_trades = sum(1 for trade in recent_trades if trade.get('profit', 0) > 0)
+            
+            if profitable_trades >= 4:  # 80%+ win rate
                 performance_adjustment = 1.2
-            elif profitable_trades == 0:
-                # All recent trades losing, decrease size
-                performance_adjustment = 0.8
-
-        # Calculate final position size with adjustments
-        adjusted_position_size = (
-            base_position_size * volatility_adjustment * performance_adjustment
-        )
-
+            elif profitable_trades <= 1:  # 20% or less win rate
+                performance_adjustment = 0.7
+                
+        # Market condition adjustments
+        market_condition_adjustment = 1.0
+        if 'rsi' in latest_df.columns:
+            rsi = latest_df['rsi'].iloc[-1]
+            if (self.position == "long" and rsi > 70) or (self.position == "short" and rsi < 30):
+                market_condition_adjustment = 0.8  # Reduce size in overbought/oversold conditions
+                
+        # Calculate final position size with all adjustments
+        adjusted_position_size = base_position_size * volatility_adjustment * trend_factor * performance_adjustment * market_condition_adjustment
+        
         # Ensure position size doesn't exceed maximum risk
-        max_position_size = self.calculate_position_size(
-            current_price, risk_pct=0.02
-        )  # Max 2% risk
+        max_position_size = self.calculate_position_size(current_price, risk_pct=0.02)  # Max 2% risk
         adjusted_position_size = min(adjusted_position_size, max_position_size)
-
+        
         # Format with correct precision
         quantity_precision = self.get_quantity_precision()
-        adjusted_position_size = float(
-            "{:0.0{}f}".format(adjusted_position_size, quantity_precision)
-        )
-
-        print(
-            f"Dynamic position sizing: Base={base_position_size}, Volatility Adj={volatility_adjustment:.2f}, "
-            + f"Performance Adj={performance_adjustment:.2f}, Final={adjusted_position_size}"
-        )
-
+        adjusted_position_size = float("{:0.0{}f}".format(adjusted_position_size, quantity_precision))
+        
+        # Log adjustments
+        print(f"\nPosition Size Adjustments:")
+        print(f"Base size: {base_position_size:.4f}")
+        print(f"Volatility adjustment: {volatility_adjustment:.2f}x")
+        print(f"Trend factor: {trend_factor:.2f}x")
+        print(f"Performance adjustment: {performance_adjustment:.2f}x")
+        print(f"Market condition adjustment: {market_condition_adjustment:.2f}x")
+        print(f"Final size: {adjusted_position_size:.4f}")
+        
         return adjusted_position_size
 
     def calculate_position_size(self, current_price, risk_pct=None):
@@ -1178,128 +1166,125 @@ class RealtimeTrader:
         return position_size
 
     def calculate_dynamic_take_profit(self, current_price):
-        """
-        Calculate dynamic take profit levels based on market conditions
-
-        Args:
-            current_price: Current price of the asset
-
-        Returns:
-            Dynamic take profit price
-        """
-        # Get latest data to analyze market conditions
+        """Calculate dynamic take profit levels based on market conditions"""
+        # Get latest data
         latest_df = self.get_latest_data(lookback_candles=20)
-
         if latest_df is None or len(latest_df) < 20:
-            # Fallback to standard take profit if not enough data
-            if self.position == "long":
-                return current_price * (1 + self.take_profit_pct)
-            else:  # short
-                return current_price * (1 - self.take_profit_pct)
-
-        # Calculate volatility using ATR
-        high = latest_df["high"].values
-        low = latest_df["low"].values
-        close = latest_df["close"].values
-
-        # Calculate True Range
-        tr1 = np.abs(high[1:] - low[1:])
-        tr2 = np.abs(high[1:] - close[:-1])
-        tr3 = np.abs(low[1:] - close[:-1])
-        tr = np.maximum(np.maximum(tr1, tr2), tr3)
-
-        # 14-period ATR
-        atr = np.mean(tr[-14:])
-
-        # Calculate volatility ratio (ATR as percentage of price)
+            return current_price * (1 + self.take_profit_pct if self.position == "long" else 1 - self.take_profit_pct)
+            
+        # Get ATR for volatility-based adjustments
+        atr = latest_df['ATR'].iloc[-1] if 'ATR' in latest_df.columns else (current_price * 0.02)
         volatility_ratio = atr / current_price
-
-        # Analyze trend strength using moving averages
-        if "ema_8" in latest_df.columns and "ema_21" in latest_df.columns:
-            ema_8 = latest_df["ema_8"].iloc[-1]
-            ema_21 = latest_df["ema_21"].iloc[-1]
-            ema_diff = (ema_8 - ema_21) / ema_21 * 100  # Percentage difference
-
-            # Determine trend direction and strength
-            if ema_diff > 0.5:  # Strong uptrend
-                self.trend_direction = 1
-                self.trend_strength = min(100, abs(ema_diff) * 20)  # Scale to 0-100
-            elif ema_diff < -0.5:  # Strong downtrend
-                self.trend_direction = -1
-                self.trend_strength = min(100, abs(ema_diff) * 20)  # Scale to 0-100
-            else:  # Neutral or weak trend
-                self.trend_direction = (
-                    0 if abs(ema_diff) < 0.1 else (1 if ema_diff > 0 else -1)
-                )
-                self.trend_strength = min(100, abs(ema_diff) * 10)  # Scale to 0-100
-        else:
-            # Simple trend detection using price action
-            price_5_periods_ago = latest_df["close"].iloc[-5]
-            price_change_pct = (
-                (current_price - price_5_periods_ago) / price_5_periods_ago * 100
-            )
-
-            if abs(price_change_pct) < 0.5:  # Sideways market
-                self.trend_direction = 0
-                self.trend_strength = 20
-            else:
-                self.trend_direction = 1 if price_change_pct > 0 else -1
-                self.trend_strength = min(
-                    100, abs(price_change_pct) * 10
-                )  # Scale to 0-100
-
-        # Adjust take profit based on trend strength and volatility
+        
+        # Get trend information
+        trend_direction, trend_strength = self.analyze_market_trend()
+        
+        # Base take profit percentage
         base_tp_pct = self.take_profit_pct
-
-        # In strong trend, extend take profit target
-        if (self.position == "long" and self.trend_direction == 1) or (
-            self.position == "short" and self.trend_direction == -1
-        ):
+        
+        # Adjust based on trend alignment
+        if (self.position == "long" and trend_direction == 1) or (self.position == "short" and trend_direction == -1):
             # Aligned with trend - extend take profit
-            trend_factor = 1.0 + (self.trend_strength / 100)  # 1.0 to 2.0
-            volatility_factor = 1.0 + (
-                volatility_ratio * 10
-            )  # Adjust based on volatility
-            adjusted_tp_pct = base_tp_pct * trend_factor * volatility_factor
-
-            # Cap the maximum take profit percentage
-            adjusted_tp_pct = min(adjusted_tp_pct, base_tp_pct * 3)
-
-            print(
-                f"Dynamic TP: Extended target due to strong {'up' if self.trend_direction == 1 else 'down'}trend "
-                + f"(Strength: {self.trend_strength:.1f}%, Volatility: {volatility_ratio*100:.2f}%)"
-            )
+            trend_factor = 1.0 + (trend_strength / 100)  # 1.0 to 2.0
         else:
-            # Counter-trend or neutral - reduce take profit
-            trend_factor = 0.8  # Reduce take profit
-            volatility_factor = 1.0 + (
-                volatility_ratio * 5
-            )  # Still adjust for volatility
-            adjusted_tp_pct = base_tp_pct * trend_factor * volatility_factor
-
-            print(
-                f"Dynamic TP: Reduced target due to {'counter-trend' if self.trend_direction != 0 else 'neutral'} "
-                + f"conditions (Strength: {self.trend_strength:.1f}%, Volatility: {volatility_ratio*100:.2f}%)"
-            )
-
-        # Calculate final take profit price
+            # Counter-trend - reduce take profit
+            trend_factor = 0.8
+            
+        # Adjust based on volatility
+        volatility_factor = 1.0 + (volatility_ratio * 5)  # Increase TP in high volatility
+        
+        # Market condition adjustments
+        market_factor = 1.0
+        if 'rsi' in latest_df.columns:
+            rsi = latest_df['rsi'].iloc[-1]
+            if (self.position == "long" and rsi > 70) or (self.position == "short" and rsi < 30):
+                market_factor = 0.8  # Reduce TP in overbought/oversold conditions
+                
+        # Calculate final take profit percentage
+        adjusted_tp_pct = base_tp_pct * trend_factor * volatility_factor * market_factor
+        
+        # Cap the maximum take profit percentage
+        max_tp_pct = 0.1  # 10%
+        adjusted_tp_pct = min(adjusted_tp_pct, max_tp_pct)
+        
+        # Calculate take profit price
         if self.position == "long":
             take_profit_price = current_price * (1 + adjusted_tp_pct)
         else:  # short
             take_profit_price = current_price * (1 - adjusted_tp_pct)
-
+            
         # Format with correct precision
         price_precision = self.get_price_precision()
-        take_profit_price = float(
-            "{:0.0{}f}".format(take_profit_price, price_precision)
-        )
-
-        print(
-            f"Dynamic take profit calculated: ${take_profit_price:.2f} "
-            + f"(Base: {base_tp_pct*100:.1f}%, Adjusted: {adjusted_tp_pct*100:.1f}%)"
-        )
-
+        take_profit_price = float("{:0.0{}f}".format(take_profit_price, price_precision))
+        
+        # Log adjustments
+        print(f"\nTake Profit Adjustments:")
+        print(f"Base TP%: {base_tp_pct*100:.2f}%")
+        print(f"Trend factor: {trend_factor:.2f}x")
+        print(f"Volatility factor: {volatility_factor:.2f}x")
+        print(f"Market factor: {market_factor:.2f}x")
+        print(f"Final TP%: {adjusted_tp_pct*100:.2f}%")
+        print(f"TP Price: {take_profit_price:.2f}")
+        
         return take_profit_price
+
+    def calculate_dynamic_stop_loss(self, current_price):
+        """Calculate dynamic stop loss based on market conditions"""
+        # Get latest data
+        latest_df = self.get_latest_data(lookback_candles=20)
+        if latest_df is None or len(latest_df) < 20:
+            return current_price * (1 - self.stop_loss_pct if self.position == "long" else 1 + self.stop_loss_pct)
+            
+        # Get ATR for volatility-based adjustments
+        atr = latest_df['ATR'].iloc[-1] if 'ATR' in latest_df.columns else (current_price * 0.02)
+        
+        # Base stop loss percentage (use ATR)
+        base_sl_pct = (atr / current_price) * self.atr_multiplier
+        
+        # Get trend information
+        trend_direction, trend_strength = self.analyze_market_trend()
+        
+        # Adjust based on trend alignment
+        if (self.position == "long" and trend_direction == 1) or (self.position == "short" and trend_direction == -1):
+            # Aligned with trend - can use tighter stop
+            trend_factor = 0.8
+        else:
+            # Counter-trend - need wider stop
+            trend_factor = 1.2
+            
+        # Market condition adjustments
+        market_factor = 1.0
+        if 'rsi' in latest_df.columns:
+            rsi = latest_df['rsi'].iloc[-1]
+            if (self.position == "long" and rsi < 30) or (self.position == "short" and rsi > 70):
+                market_factor = 0.8  # Tighter stop in oversold/overbought conditions
+                
+        # Calculate final stop loss percentage
+        adjusted_sl_pct = base_sl_pct * trend_factor * market_factor
+        
+        # Cap the maximum stop loss percentage
+        max_sl_pct = 0.03  # 3%
+        adjusted_sl_pct = min(adjusted_sl_pct, max_sl_pct)
+        
+        # Calculate stop loss price
+        if self.position == "long":
+            stop_loss_price = current_price * (1 - adjusted_sl_pct)
+        else:  # short
+            stop_loss_price = current_price * (1 + adjusted_sl_pct)
+            
+        # Format with correct precision
+        price_precision = self.get_price_precision()
+        stop_loss_price = float("{:0.0{}f}".format(stop_loss_price, price_precision))
+        
+        # Log adjustments
+        print(f"\nStop Loss Adjustments:")
+        print(f"Base SL%: {base_sl_pct*100:.2f}%")
+        print(f"Trend factor: {trend_factor:.2f}x")
+        print(f"Market factor: {market_factor:.2f}x")
+        print(f"Final SL%: {adjusted_sl_pct*100:.2f}%")
+        print(f"SL Price: {stop_loss_price:.2f}")
+        
+        return stop_loss_price
 
     def analyze_market_trend(self):
         """
@@ -3714,9 +3699,9 @@ def run_real_trading(
                     print("✅ Signal cooldown complete")
 
             # Get latest data
-            latest_df = realtime_trader.get_latest_data(lookback_candles=2)
+            latest_df = realtime_trader.get_latest_data(lookback_candles=50)  # Increased lookback for better analysis
 
-            if latest_df is None or len(latest_df) < 1:
+            if latest_df is None or len(latest_df) < 50:
                 print("Error fetching latest data, will retry next interval")
                 time.sleep(60)
                 continue
@@ -3724,15 +3709,66 @@ def run_real_trading(
             # Get the latest candle
             latest_candle = latest_df.iloc[-1]
             current_price = float(latest_candle["close"])
-            print(f"Current {realtime_trader.symbol} price: ${current_price:.2f}")
+            print(f"Current {realtime_trader.symbol} price: ${current_price:.4f}")
 
-            # Generate trading signal
-            signal = realtime_trader.generate_trading_signal(latest_df)
+            # Check existing position first
+            if realtime_trader.has_open_position():
+                print("Checking existing position...")
+                # Check take profit and stop loss
+                result = realtime_trader.check_take_profit_stop_loss(current_price, current_time)
+                if result:
+                    print(f"Position closed: {result}")
+                    last_signal_time = current_time  # Reset cooldown after position close
+                
+                # Reassess position if enabled
+                if realtime_trader.reassess_positions:
+                    reassess_result = realtime_trader.reassess_position(current_price, current_time)
+                    if reassess_result:
+                        print(f"Position adjustment: {reassess_result}")
+            else:
+                # Generate trading signal
+                signal = realtime_trader.generate_trading_signal(latest_df)
+                
+                # Execute trade if signal is generated and cooldown is complete
+                if signal != 0 and (last_signal_time is None or 
+                    (current_time - last_signal_time).total_seconds() >= realtime_trader.signal_cooldown_minutes * 60):
+                    
+                    print(f"Signal generated: {'LONG' if signal == 1 else 'SHORT'}")
+                    
+                    # Execute the trade
+                    trade_result = realtime_trader.execute_trade(signal, current_price, current_time)
+                    if trade_result:
+                        print(f"Trade executed: {trade_result}")
+                        last_signal_time = current_time  # Update last signal time
+                        
+                        # Calculate position value
+                        position_value = realtime_trader.position_size * current_price
+                        
+                        # Send notification if enabled
+                        realtime_trader.send_notification(
+                            f"🔔 New Trade Opened\n"
+                            f"Symbol: {realtime_trader.symbol}\n"
+                            f"Type: {'LONG' if signal == 1 else 'SHORT'}\n"
+                            f"Entry Price: ${current_price:.4f}\n"
+                            f"Position Size: {realtime_trader.position_size:.4f}\n"
+                            f"Position Value: ${position_value:.2f}\n"
+                            f"Take Profit: ${realtime_trader.take_profit_price:.4f} ({((realtime_trader.take_profit_price - current_price) / current_price * 100 * (1 if signal == 1 else -1)):.2f}%)\n"
+                            f"Stop Loss: ${realtime_trader.stop_loss_price:.4f} ({((realtime_trader.stop_loss_price - current_price) / current_price * 100 * (1 if signal == 1 else -1)):.2f}%)\n"
+                            f"Leverage: {realtime_trader.leverage}x\n"
+                            f"Risk: ${(position_value * abs((realtime_trader.stop_loss_price - current_price) / current_price)):.2f}\n"
+                            f"Time: {current_time.strftime('%Y-%m-%d %H:%M:%S')}"
+                        )
+                        
+                        # Also send notification for position management settings
+                        if realtime_trader.partial_tp_enabled:
+                            partial_tp_price = current_price * (1 + realtime_trader.partial_tp_pct if signal == 1 else 1 - realtime_trader.partial_tp_pct)
+                            realtime_trader.send_notification(
+                                f"📊 Position Management\n"
+                                f"Partial TP Enabled: {realtime_trader.partial_tp_size * 100:.0f}% at ${partial_tp_price:.4f} ({realtime_trader.partial_tp_pct * 100:.1f}%)\n"
+                                f"Trailing Stop: Active\n"
+                                f"Break-even Stop: Will move SL to entry after partial TP"
+                            )
             
-            # Update last signal time if we got a valid signal
-            if signal != 0:
-                last_signal_time = current_time
-
             # Save results
             realtime_trader.save_trading_results()
 
