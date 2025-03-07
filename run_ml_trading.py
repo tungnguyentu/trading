@@ -90,7 +90,12 @@ def parse_arguments():
         default=0,
         help="ML model retraining interval in hours (0 to disable)",
     )
-
+    parser.add_argument(
+        "--signal-cooldown",
+        type=int,
+        default=15,
+        help="Signal cooldown in minutes",
+    )
     # Trading modes
     parser.add_argument(
         "--test-mode", action="store_true", help="Run in test mode without real trades"
@@ -244,7 +249,7 @@ def main():
         trend_following_mode=True,
         use_enhanced_signals=True,
         signal_confirmation_threshold=2,
-        signal_cooldown_minutes=15,
+        signal_cooldown_minutes=args.signal_cooldown,
         use_scalping_mode=False,
         scalping_tp_factor=0.5,
         scalping_sl_factor=0.8,
