@@ -3452,6 +3452,201 @@ class RealtimeTrader:
             print(f"Error training ML model: {e}")
             return False
 
+    def generate_trading_signal(self, latest_df):
+        """
+        Generate trading signal based on latest data and configured strategies
+
+        Args:
+            latest_df: DataFrame with latest price data and indicators
+
+        Returns:
+            int: 1 for buy signal, -1 for sell signal, 0 for no signal
+        """
+        if latest_df is None or len(latest_df) < 2:
+            print("Not enough data to generate signal")
+            return 0
+
+        print("\n=== SIGNAL GENERATION ===")
+        
+        # Get current position info
+        has_position = self.has_open_position()
+        if has_position:
+            print(f"Current position: {self.position.upper()}")
+            # Don't generate new signals if we already have a position
+            print("No new signals generated while position is open")
+            return 0
+
+        # Initialize signal components
+        traditional_signal = 0
+        ml_signal = 0
+        ml_confidence = 0
+        enhanced_signal = 0
+        enhanced_confidence = 0
+
+        # 1. Get traditional technical signals
+        try:
+            # Get the latest and previous candle
+            current = latest_df.iloc[-1]
+            previous = latest_df.iloc[-2]
+
+            # Check if we have the necessary indicators
+            required_indicators = ['ema_8', 'ema_21', 'rsi', 'macd', 'macd_signal']
+            has_indicators = all(indicator in current.index for indicator in required_indicators)
+
+            if has_indicators:
+                # EMA Crossover
+                ema_8_current = current['ema_8']
+                ema_21_current = current['ema_21']
+                ema_8_prev = previous['ema_8']
+                ema_21_prev = previous['ema_21']
+
+                # RSI conditions
+                rsi = current['rsi']
+
+                # MACD conditions
+                macd_current = current['macd']
+                signal_current = current['macd_signal']
+                macd_prev = previous['macd']
+                signal_prev = previous['macd_signal']
+
+                # Generate traditional signal
+                if ema_8_prev <= ema_21_prev and ema_8_current > ema_21_current:
+                    # Bullish EMA crossover
+                    if rsi < 70:  # Not overbought
+                        traditional_signal = 1
+                        print("Traditional Signal: BULLISH (EMA crossover with RSI confirmation)")
+                elif ema_8_prev >= ema_21_prev and ema_8_current < ema_21_current:
+                    # Bearish EMA crossover
+                    if rsi > 30:  # Not oversold
+                        traditional_signal = -1
+                        print("Traditional Signal: BEARISH (EMA crossover with RSI confirmation)")
+
+                # MACD confirmation
+                if macd_prev <= signal_prev and macd_current > signal_current:
+                    if traditional_signal != -1:  # Don't contradict bearish signal
+                        traditional_signal = 1
+                        print("Traditional Signal: BULLISH (MACD crossover)")
+                elif macd_prev >= signal_prev and macd_current < signal_current:
+                    if traditional_signal != 1:  # Don't contradict bullish signal
+                        traditional_signal = -1
+                        print("Traditional Signal: BEARISH (MACD crossover)")
+            else:
+                print("Warning: Some required indicators are missing")
+
+        except Exception as e:
+            print(f"Error generating traditional signals: {e}")
+
+        # 2. Get ML signals if enabled
+        if self.use_ml_signals and self.ml_manager:
+            try:
+                ml_signal, ml_confidence = self.ml_manager.get_ml_signal(self.symbol, latest_df)
+                print(f"ML Signal: {'BUY' if ml_signal == 1 else 'SELL' if ml_signal == -1 else 'NEUTRAL'} with {ml_confidence:.2f} confidence")
+
+                # Check if ML model needs retraining
+                if self.train_ml and self.retrain_interval > 0:
+                    if self.last_train_time is None or \
+                       (datetime.now() - self.last_train_time).total_seconds() > (self.retrain_interval * 3600):
+                        print("ML model requires retraining...")
+                        self.train_ml_model()
+
+            except Exception as e:
+                print(f"Error getting ML signal: {e}")
+                ml_signal = 0
+                ml_confidence = 0
+
+        # 3. Get enhanced signals if enabled
+        if self.use_enhanced_signals:
+            enhanced_signal, enhanced_confidence = self.generate_enhanced_signal(latest_df)
+            print(f"Enhanced Signal: {'BUY' if enhanced_signal == 1 else 'SELL' if enhanced_signal == -1 else 'NEUTRAL'} with {enhanced_confidence:.2f} confidence")
+
+        # 4. Analyze market trend if trend following is enabled
+        trend_direction = 0
+        trend_strength = 0
+        if self.trend_following_mode:
+            trend_direction, trend_strength = self.analyze_market_trend()
+            print(f"Market Trend: {'BULLISH' if trend_direction == 1 else 'BEARISH' if trend_direction == -1 else 'NEUTRAL'} with {trend_strength:.1f}% strength")
+
+        # 5. Combine signals to make final decision
+        final_signal = 0
+        signal_weight = 0
+        total_weight = 0
+
+        # Traditional signal weight (base weight: 1.0)
+        if traditional_signal != 0:
+            signal_weight += traditional_signal * 1.0
+            total_weight += 1.0
+
+        # ML signal weight (base weight: 1.5 if confidence is high)
+        if self.use_ml_signals and ml_signal != 0:
+            if ml_confidence >= self.ml_confidence:
+                signal_weight += ml_signal * 1.5
+                total_weight += 1.5
+            else:
+                signal_weight += ml_signal * 0.5
+                total_weight += 0.5
+
+        # Enhanced signal weight (base weight: 2.0 if confidence is high)
+        if self.use_enhanced_signals and enhanced_signal != 0:
+            if enhanced_confidence >= 70:
+                signal_weight += enhanced_signal * 2.0
+                total_weight += 2.0
+            else:
+                signal_weight += enhanced_signal * 1.0
+                total_weight += 1.0
+
+        # Calculate weighted average signal
+        if total_weight > 0:
+            weighted_signal = signal_weight / total_weight
+            
+            # Strong signal threshold
+            if abs(weighted_signal) >= 0.6:
+                final_signal = 1 if weighted_signal > 0 else -1
+            
+            print(f"Weighted signal: {weighted_signal:.2f}")
+
+        # Apply trend following filter if enabled
+        if self.trend_following_mode and final_signal != 0:
+            if trend_strength >= 50:  # Only apply trend filter if trend is strong enough
+                if (final_signal == 1 and trend_direction == -1) or \
+                   (final_signal == -1 and trend_direction == 1):
+                    print(f"Signal rejected: Against market trend (strength: {trend_strength:.1f}%)")
+                    final_signal = 0
+                else:
+                    print(f"Signal aligned with market trend (strength: {trend_strength:.1f}%)")
+            else:
+                print(f"Weak market trend ({trend_strength:.1f}%) - proceeding with signal")
+
+        # Apply scalping mode adjustments if enabled
+        if self.use_scalping_mode and final_signal != 0:
+            # In scalping mode, we want to be more aggressive with entries
+            # but also more careful with market conditions
+            
+            # Check recent volatility
+            if 'ATR' in latest_df.columns:
+                atr = latest_df['ATR'].iloc[-1]
+                avg_price = latest_df['close'].mean()
+                volatility_ratio = atr / avg_price
+                
+                # For scalping, we prefer moderate volatility
+                if volatility_ratio < 0.001:  # Too low volatility
+                    print("Signal rejected: Volatility too low for scalping")
+                    final_signal = 0
+                elif volatility_ratio > 0.005:  # Too high volatility
+                    print("Signal rejected: Volatility too high for scalping")
+                    final_signal = 0
+                else:
+                    print(f"Volatility suitable for scalping ({volatility_ratio*100:.3f}%)")
+
+        # Final signal summary
+        if final_signal == 1:
+            print("FINAL SIGNAL: BUY 🟢")
+        elif final_signal == -1:
+            print("FINAL SIGNAL: SELL 🔴")
+        else:
+            print("FINAL SIGNAL: NEUTRAL ⚪")
+
+        return final_signal
+
 
 def run_real_trading(
     realtime_trader,
