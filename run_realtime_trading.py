@@ -31,10 +31,13 @@ def main():
     )
     parser.add_argument("--hours", type=int, default=24, help="Duration in hours")
     parser.add_argument(
-        "--interval", type=int, default=15, help="Update interval in minutes"
+        "--interval", type=int, default=15, help="Update interval in minutes (ignored if --interval-seconds is used)"
     )
     parser.add_argument(
-        "--leverage", type=int, default=15, help="Margin trading leverage (15-20x)"
+        "--interval-seconds", type=int, default=0, help="Update interval in seconds (overrides --interval if set)"
+    )
+    parser.add_argument(
+        "--leverage", type=int, default=15, help="Margin trading leverage (1x-50x)"
     )
     parser.add_argument("--test", action="store_true", help="Run in test mode with fake balance")
     parser.add_argument("--full-investment", action="store_true", help="Use full investment amount for each trade (higher risk)")
@@ -50,6 +53,16 @@ def main():
     parser.add_argument("--pyramid-entries", type=int, default=2, help="Maximum number of pyramid entries (1-5)")
     parser.add_argument("--pyramid-threshold", type=float, default=1.0, help="Profit percentage required before pyramiding (0.5-5.0)")
     parser.add_argument("--dynamic-tp", action="store_true", help="Use dynamic take profit targets based on market conditions")
+    parser.add_argument("--scalping-mode", action="store_true", help="Enable scalping mode for small range trading with quick profits")
+    parser.add_argument("--scalping-tp-factor", type=float, default=0.5, help="Take profit factor for scalping mode (0.2-1.0)")
+    parser.add_argument("--scalping-sl-factor", type=float, default=0.8, help="Stop loss factor for scalping mode (0.5-1.0)")
+    parser.add_argument("--use-ml-signals", action="store_true", help="Use machine learning signals for trading decisions")
+    parser.add_argument("--ml-confidence", type=float, default=0.6, help="Minimum confidence threshold for ML signals (0.5-0.9)")
+    parser.add_argument("--train-ml", action="store_true", help="Train ML model at startup")
+    parser.add_argument("--retrain-interval", type=int, default=0, help="Retrain ML model every N hours (0 = no retraining)")
+    parser.add_argument("--reassess-positions", action="store_true", help="Reassess positions at each interval based on changing signals")
+    parser.add_argument("--fixed-tp", type=float, default=0, help="Fixed take profit amount in USDT per position (e.g., 10 = $10 profit)")
+    parser.add_argument("--fixed-sl", type=float, default=0, help="Fixed stop loss amount in USDT per position (e.g., 5 = $5 loss)")
 
     args = parser.parse_args()
 
@@ -88,6 +101,22 @@ def main():
             print(f"🔺 Pyramiding enabled - Up to {args.pyramid_entries} additional entries at {args.pyramid_threshold}% profit")
         if args.dynamic_tp:
             print("💰 Dynamic take profit enabled - Adjusting targets based on market conditions")
+        if args.scalping_mode:
+            print("🚀 Scalping mode enabled - Small range trading with quick profits")
+        if args.use_ml_signals:
+            print(f"🧠 ML signals enabled - Using machine learning with {args.ml_confidence:.1f} confidence threshold")
+            if args.train_ml:
+                print("🔄 ML model will be trained at startup")
+            if args.retrain_interval > 0:
+                print(f"🔄 ML model will be retrained every {args.retrain_interval} hours")
+        else:
+            print("🧠 ML signals disabled - Using only traditional/enhanced signals")
+        if args.reassess_positions:
+            print("🔄 Position reassessment enabled - Positions will be evaluated at each interval")
+        if args.fixed_tp > 0:
+            print(f"📈 Fixed take profit: {args.fixed_tp} USDT per position")
+        if args.fixed_sl > 0:
+            print(f"📉 Fixed stop loss: {args.fixed_sl} USDT per position")
         print("=" * 80)
 
         confirmation = input(
@@ -121,6 +150,22 @@ def main():
             print(f"🔺 Pyramiding enabled - Up to {args.pyramid_entries} additional entries at {args.pyramid_threshold}% profit")
         if args.dynamic_tp:
             print("💰 Dynamic take profit enabled - Adjusting targets based on market conditions")
+        if args.scalping_mode:
+            print("🚀 Scalping mode enabled - Small range trading with quick profits")
+        if args.use_ml_signals:
+            print(f"🧠 ML signals enabled - Using machine learning with {args.ml_confidence:.1f} confidence threshold")
+            if args.train_ml:
+                print("🔄 ML model will be trained at startup")
+            if args.retrain_interval > 0:
+                print(f"🔄 ML model will be retrained every {args.retrain_interval} hours")
+        else:
+            print("🧠 ML signals disabled - Using only traditional/enhanced signals")
+        if args.reassess_positions:
+            print("🔄 Position reassessment enabled - Positions will be evaluated at each interval")
+        if args.fixed_tp > 0:
+            print(f"📈 Fixed take profit: {args.fixed_tp} USDT per position")
+        if args.fixed_sl > 0:
+            print(f"📉 Fixed stop loss: {args.fixed_sl} USDT per position")
         print("=" * 80)
 
     # Initialize real-time trader
@@ -140,14 +185,25 @@ def main():
         trend_following_mode=args.trend_following,
         use_enhanced_signals=args.enhanced_signals,
         signal_confirmation_threshold=args.signal_threshold,
-        signal_cooldown_minutes=args.signal_cooldown
+        signal_cooldown_minutes=args.signal_cooldown,
+        use_scalping_mode=args.scalping_mode,
+        scalping_tp_factor=args.scalping_tp_factor,
+        scalping_sl_factor=args.scalping_sl_factor,
+        use_ml_signals=args.use_ml_signals,
+        ml_confidence=args.ml_confidence,
+        train_ml=args.train_ml,
+        retrain_interval=args.retrain_interval,
+        reassess_positions=args.reassess_positions,
+        fixed_tp=args.fixed_tp,
+        fixed_sl=args.fixed_sl
     )
     # Run real-time trading
     try:
         print(f"Starting {'test' if args.test else 'real'} trading...")
         result = trader.run_real_trading(
             duration_hours=args.hours,
-            update_interval_minutes=args.interval
+            update_interval_minutes=args.interval,
+            update_interval_seconds=args.interval_seconds
         )
         
         # Display final results
