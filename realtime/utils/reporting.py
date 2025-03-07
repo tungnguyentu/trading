@@ -2,7 +2,8 @@ import os
 import pandas as pd
 import matplotlib.pyplot as plt
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
+import time
 
 def save_results(simulator, results_dir, symbol, initial_investment):
     """Save simulation results to files"""
@@ -137,3 +138,75 @@ def save_summary_stats(simulator, results_dir, symbol, initial_investment):
         
     except Exception as e:
         print(f"Error saving summary statistics: {e}")
+
+def display_countdown(next_run_time, interval_seconds, prefix="Next update in"):
+    """
+    Display a countdown timer until the next interval
+    
+    Args:
+        next_run_time: Datetime of the next scheduled run
+        interval_seconds: Interval in seconds
+        prefix: Text to display before the countdown
+    """
+    try:
+        now = datetime.now()
+        remaining = (next_run_time - now).total_seconds()
+        
+        if remaining <= 0:
+            # If time has passed, calculate the next interval
+            elapsed = abs(remaining)
+            intervals_passed = int(elapsed // interval_seconds) + 1
+            next_run_time = next_run_time + timedelta(seconds=intervals_passed * interval_seconds)
+            remaining = (next_run_time - now).total_seconds()
+            print(f"Next update in {remaining:.0f} seconds")
+            print("Countdown started...")
+        
+        # Format the remaining time
+        minutes, seconds = divmod(int(remaining), 60)
+        hours, minutes = divmod(minutes, 60)
+        
+        # Create a visual progress bar
+        total_width = 20
+        elapsed_width = int((interval_seconds - remaining) / interval_seconds * total_width)
+        bar = "■" * elapsed_width + "□" * (total_width - elapsed_width)
+        
+        # Calculate progress percentage
+        progress_pct = (interval_seconds - remaining) / interval_seconds
+        
+        # Display the countdown
+        if hours > 0:
+            countdown = f"{prefix}: {hours:02d}:{minutes:02d}:{seconds:02d} [{bar}] {progress_pct:.0%}"
+        else:
+            countdown = f"{prefix}: {minutes:02d}:{seconds:02d} [{bar}] {progress_pct:.0%}"
+            
+        print(countdown, end='\r', flush=True)
+        
+        # If countdown is complete (less than 1 second remaining)
+        if remaining < 1:
+            print("\nUpdate time reached!                                      ")  # Clear line with newline
+            print(" " * 50, end='\r')  # Clear any remaining characters
+            
+        return next_run_time
+        
+    except Exception as e:
+        print(f"\nError in countdown display: {e}")
+        return next_run_time
+
+def format_time_remaining(seconds):
+    """
+    Format seconds into a human-readable time string
+    
+    Args:
+        seconds: Time in seconds
+        
+    Returns:
+        str: Formatted time string
+    """
+    if seconds < 60:
+        return f"{seconds:.1f} seconds"
+    elif seconds < 3600:
+        minutes = seconds / 60
+        return f"{minutes:.1f} minutes"
+    else:
+        hours = seconds / 3600
+        return f"{hours:.1f} hours"

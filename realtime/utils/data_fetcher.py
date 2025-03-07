@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 from binance.exceptions import BinanceAPIException
+from ..utils.reporting import display_countdown
 
 def get_market_data(client, symbol, timeframe, lookback_candles=500, short_window=20, long_window=50, atr_period=14):
     """Get latest market data"""
