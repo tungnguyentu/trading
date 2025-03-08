@@ -175,8 +175,8 @@ class MLTrainer:
         df['vpt'] = df['volume'] * ((df['close'] - df['close'].shift(1)) / df['close'].shift(1))
         df['vpt_sma'] = df['vpt'].rolling(window=13).mean()
         
-        # Clean up NaN values
-        df = df.fillna(method='ffill').fillna(0)
+        # Clean up NaN values using forward fill then backward fill
+        df = df.ffill().bfill()
         
         return df
 
@@ -195,7 +195,14 @@ class MLTrainer:
         df = df.iloc[:-3]
         
         # Split features and target
-        feature_columns = [col for col in df.columns if col not in ['target', 'timestamp', 'date', 'time']]
+        # Exclude non-numeric and datetime columns
+        excluded_columns = ['target', 'timestamp', 'date', 'time', 'open_time', 'close_time', 'symbol']
+        feature_columns = [col for col in df.columns 
+                         if col not in excluded_columns 
+                         and df[col].dtype in ['float64', 'int64']]
+        
+        print(f"Using {len(feature_columns)} features: {feature_columns}")
+        
         X = df[feature_columns]
         y = df['target']
         
