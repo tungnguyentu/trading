@@ -118,7 +118,7 @@ class MLTrainer:
         # Volume features
         df['volume_ma'] = df['volume'].rolling(window=20).mean()
         df['volume_std'] = df['volume'].rolling(window=20).std()
-        df['volume_ratio'] = df['volume'] / df['volume_ma']
+        df['volume_ratio'] = df['volume'] / df['volume_ma'].replace(0, np.nan)  # Avoid division by zero
         df['on_balance_volume'] = (df['close'].diff() > 0).astype(int) * df['volume']
         
         # Momentum indicators
@@ -128,10 +128,40 @@ class MLTrainer:
         df['stoch_d'] = df['stoch_k'].rolling(window=3).mean()
         df['cci'] = ta.trend.cci(df['high'], df['low'], df['close'], window=20)
         
-        # Trend indicators
-        df['adx'] = ta.trend.adx(df['high'], df['low'], df['close'], window=14)
-        df['dmi_plus'] = ta.trend.adx_pos(df['high'], df['low'], df['close'], window=14)
-        df['dmi_minus'] = ta.trend.adx_neg(df['high'], df['low'], df['close'], window=14)
+        # Trend indicators with error handling
+        try:
+            # Calculate ADX components with error handling
+            high = df['high']
+            low = df['low']
+            close = df['close']
+            
+            # True Range
+            tr1 = abs(high - low)
+            tr2 = abs(high - close.shift())
+            tr3 = abs(low - close.shift())
+            tr = pd.DataFrame({'tr1': tr1, 'tr2': tr2, 'tr3': tr3}).max(axis=1)
+            atr = tr.rolling(window=14).mean()
+            
+            # +DM and -DM
+            plus_dm = high - high.shift()
+            minus_dm = low.shift() - low
+            plus_dm = plus_dm.where((plus_dm > minus_dm) & (plus_dm > 0), 0)
+            minus_dm = minus_dm.where((minus_dm > plus_dm) & (minus_dm > 0), 0)
+            
+            # Smoothed +DM and -DM
+            plus_di = 100 * (plus_dm.rolling(window=14).mean() / atr)
+            minus_di = 100 * (minus_dm.rolling(window=14).mean() / atr)
+            
+            # ADX
+            dx = 100 * abs(plus_di - minus_di) / (plus_di + minus_di)
+            df['adx'] = dx.rolling(window=14).mean()
+            df['dmi_plus'] = plus_di
+            df['dmi_minus'] = minus_di
+        except Exception as e:
+            print(f"Warning: Error calculating ADX indicators: {e}")
+            df['adx'] = 0
+            df['dmi_plus'] = 0
+            df['dmi_minus'] = 0
         
         # Moving averages and derived features
         for window in [8, 13, 21, 34, 55]:
@@ -144,10 +174,10 @@ class MLTrainer:
         
         # Volatility indicators
         df['atr'] = ta.volatility.average_true_range(df['high'], df['low'], df['close'], window=14)
-        df['atr_pct'] = df['atr'] / df['close'] * 100
+        df['atr_pct'] = df['atr'] / df['close'].replace(0, np.nan) * 100  # Avoid division by zero
         df['bbands_upper'] = ta.volatility.bollinger_hband(df['close'], window=20, window_dev=2)
         df['bbands_lower'] = ta.volatility.bollinger_lband(df['close'], window=20, window_dev=2)
-        df['bbands_width'] = (df['bbands_upper'] - df['bbands_lower']) / df['close'] * 100
+        df['bbands_width'] = (df['bbands_upper'] - df['bbands_lower']) / df['close'].replace(0, np.nan) * 100  # Avoid division by zero
         
         # MACD
         df['macd'] = ta.trend.macd_diff(df['close'], window_slow=26, window_fast=12, window_sign=9)
@@ -164,16 +194,19 @@ class MLTrainer:
         df['higher_close'] = df['close'] > df['close'].shift(1)
         
         # Advanced momentum features
-        df['close_to_ema8'] = (df['close'] - df['ema_8']) / df['ema_8'] * 100
-        df['close_to_ema21'] = (df['close'] - df['ema_21']) / df['ema_21'] * 100
+        df['close_to_ema8'] = (df['close'] - df['ema_8']) / df['ema_8'].replace(0, np.nan) * 100  # Avoid division by zero
+        df['close_to_ema21'] = (df['close'] - df['ema_21']) / df['ema_21'].replace(0, np.nan) * 100  # Avoid division by zero
         df['momentum'] = df['close'] - df['close'].shift(4)
         
         # Volatility regime
         df['volatility_regime'] = np.where(df['atr_pct'] > df['atr_pct'].rolling(window=20).mean(), 1, 0)
         
         # Volume price trend
-        df['vpt'] = df['volume'] * ((df['close'] - df['close'].shift(1)) / df['close'].shift(1))
+        df['vpt'] = df['volume'] * ((df['close'] - df['close'].shift(1)) / df['close'].shift(1).replace(0, np.nan))  # Avoid division by zero
         df['vpt_sma'] = df['vpt'].rolling(window=13).mean()
+        
+        # Replace infinite values with NaN
+        df = df.replace([np.inf, -np.inf], np.nan)
         
         # Clean up NaN values using forward fill then backward fill
         df = df.ffill().bfill()
@@ -205,6 +238,11 @@ class MLTrainer:
         
         X = df[feature_columns]
         y = df['target']
+        
+        # Replace infinite values with NaN and then fill them
+        X = X.replace([np.inf, -np.inf], np.nan)
+        # Forward fill then backward fill NaN values
+        X = X.ffill().bfill()
         
         # Train/test split (use more recent data for testing)
         train_size = int(len(df) * 0.8)
@@ -249,7 +287,7 @@ class MLTrainer:
                     }
                 }
                 
-                # Optimize each model
+                # Optimize each model with increased timeout
                 optimized_models = {}
                 for name, model in models.items():
                     print(f"Optimizing {name} model...")
@@ -258,9 +296,14 @@ class MLTrainer:
                         param_grids[name],
                         cv=TimeSeriesSplit(n_splits=5),
                         scoring='f1_weighted',
-                        n_jobs=-1
+                        n_jobs=-1,
+                        pre_dispatch='2*n_jobs',  # Increase pre-dispatched jobs
+                        error_score='raise'  # Raise errors instead of using nan
                     )
-                    grid_search.fit(X_train_scaled, y_train)
+                    # Set longer timeout for workers
+                    import joblib
+                    with joblib.parallel_backend('loky', timeout=300):  # 5 minutes timeout
+                        grid_search.fit(X_train_scaled, y_train)
                     optimized_models[name] = grid_search.best_estimator_
                     print(f"Best parameters for {name}: {grid_search.best_params_}")
                 
