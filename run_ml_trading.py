@@ -16,8 +16,8 @@ from dotenv import load_dotenv
 from realtime.trainer.ml_trainer import MLTrainer
 
 # Import trading components
-#from realtime.trader import RealtimeTrader
-from realtime.real_trader import RealtimeTrader
+from realtime.trader import RealtimeTrader
+
 
 def parse_arguments():
     """Parse command line arguments"""
@@ -249,8 +249,8 @@ def main():
         max_pyramid_entries=2,
         pyramid_threshold_pct=0.01,
         use_dynamic_take_profit=args.dynamic_tp,
-        trend_following_mode=False,
-        use_enhanced_signals=False,
+        trend_following_mode=True,
+        use_enhanced_signals=True,
         signal_confirmation_threshold=2,
         signal_cooldown_minutes=args.signal_cooldown,
         use_scalping_mode=False,

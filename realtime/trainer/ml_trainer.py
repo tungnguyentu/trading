@@ -7,14 +7,6 @@ from datetime import datetime, timedelta
 import argparse
 from binance.client import Client
 from dotenv import load_dotenv
-import ta
-from sklearn.preprocessing import StandardScaler
-from sklearn.model_selection import TimeSeriesSplit
-from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
-from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
-from sklearn.model_selection import GridSearchCV
-from sklearn.ensemble import VotingClassifier
-from xgboost import XGBClassifier
 
 # Add the parent directory to the path so we can import from the root
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -106,286 +98,6 @@ class MLTrainer:
         print(f"Fetched {len(df)} candles for {symbol}")
         return df
     
-    def add_features(self, df):
-        """Add technical indicators and features"""
-        # Create a copy to avoid modifying original data
-        df = df.copy()
-        
-        # Basic price features
-        df['returns'] = df['close'].pct_change()
-        df['log_returns'] = np.log(df['close']/df['close'].shift(1))
-        
-        # Volume features
-        df['volume_ma'] = df['volume'].rolling(window=20).mean()
-        df['volume_std'] = df['volume'].rolling(window=20).std()
-        df['volume_ratio'] = df['volume'] / df['volume_ma'].replace(0, np.nan)  # Avoid division by zero
-        df['on_balance_volume'] = (df['close'].diff() > 0).astype(int) * df['volume']
-        
-        # Momentum indicators
-        df['rsi'] = ta.momentum.rsi(df['close'], window=14)
-        df['rsi_ma'] = df['rsi'].rolling(window=10).mean()
-        df['stoch_k'] = ta.momentum.stoch(df['high'], df['low'], df['close'], window=14, smooth_window=3)
-        df['stoch_d'] = df['stoch_k'].rolling(window=3).mean()
-        df['cci'] = ta.trend.cci(df['high'], df['low'], df['close'], window=20)
-        
-        # Trend indicators with error handling
-        try:
-            # Calculate ADX components with error handling
-            high = df['high']
-            low = df['low']
-            close = df['close']
-            
-            # True Range
-            tr1 = abs(high - low)
-            tr2 = abs(high - close.shift())
-            tr3 = abs(low - close.shift())
-            tr = pd.DataFrame({'tr1': tr1, 'tr2': tr2, 'tr3': tr3}).max(axis=1)
-            atr = tr.rolling(window=14).mean()
-            
-            # +DM and -DM
-            plus_dm = high - high.shift()
-            minus_dm = low.shift() - low
-            plus_dm = plus_dm.where((plus_dm > minus_dm) & (plus_dm > 0), 0)
-            minus_dm = minus_dm.where((minus_dm > plus_dm) & (minus_dm > 0), 0)
-            
-            # Smoothed +DM and -DM
-            plus_di = 100 * (plus_dm.rolling(window=14).mean() / atr)
-            minus_di = 100 * (minus_dm.rolling(window=14).mean() / atr)
-            
-            # ADX
-            dx = 100 * abs(plus_di - minus_di) / (plus_di + minus_di)
-            df['adx'] = dx.rolling(window=14).mean()
-            df['dmi_plus'] = plus_di
-            df['dmi_minus'] = minus_di
-        except Exception as e:
-            print(f"Warning: Error calculating ADX indicators: {e}")
-            df['adx'] = 0
-            df['dmi_plus'] = 0
-            df['dmi_minus'] = 0
-        
-        # Moving averages and derived features
-        for window in [8, 13, 21, 34, 55]:
-            df[f'ema_{window}'] = ta.trend.ema_indicator(df['close'], window=window)
-            df[f'sma_{window}'] = df['close'].rolling(window=window).mean()
-            
-        # EMA crossover signals
-        df['ema_8_13_cross'] = np.where(df['ema_8'] > df['ema_13'], 1, -1)
-        df['ema_13_21_cross'] = np.where(df['ema_13'] > df['ema_21'], 1, -1)
-        
-        # Volatility indicators
-        df['atr'] = ta.volatility.average_true_range(df['high'], df['low'], df['close'], window=14)
-        df['atr_pct'] = df['atr'] / df['close'].replace(0, np.nan) * 100  # Avoid division by zero
-        df['bbands_upper'] = ta.volatility.bollinger_hband(df['close'], window=20, window_dev=2)
-        df['bbands_lower'] = ta.volatility.bollinger_lband(df['close'], window=20, window_dev=2)
-        df['bbands_width'] = (df['bbands_upper'] - df['bbands_lower']) / df['close'].replace(0, np.nan) * 100  # Avoid division by zero
-        
-        # MACD
-        df['macd'] = ta.trend.macd_diff(df['close'], window_slow=26, window_fast=12, window_sign=9)
-        df['macd_signal'] = ta.trend.macd_signal(df['close'], window_slow=26, window_fast=12, window_sign=9)
-        
-        # Support and resistance levels
-        df['pivot'] = (df['high'] + df['low'] + df['close']) / 3
-        df['r1'] = 2 * df['pivot'] - df['low']
-        df['s1'] = 2 * df['pivot'] - df['high']
-        
-        # Price patterns
-        df['higher_high'] = df['high'] > df['high'].shift(1)
-        df['lower_low'] = df['low'] < df['low'].shift(1)
-        df['higher_close'] = df['close'] > df['close'].shift(1)
-        
-        # Advanced momentum features
-        df['close_to_ema8'] = (df['close'] - df['ema_8']) / df['ema_8'].replace(0, np.nan) * 100  # Avoid division by zero
-        df['close_to_ema21'] = (df['close'] - df['ema_21']) / df['ema_21'].replace(0, np.nan) * 100  # Avoid division by zero
-        df['momentum'] = df['close'] - df['close'].shift(4)
-        
-        # Volatility regime
-        df['volatility_regime'] = np.where(df['atr_pct'] > df['atr_pct'].rolling(window=20).mean(), 1, 0)
-        
-        # Volume price trend
-        df['vpt'] = df['volume'] * ((df['close'] - df['close'].shift(1)) / df['close'].shift(1).replace(0, np.nan))  # Avoid division by zero
-        df['vpt_sma'] = df['vpt'].rolling(window=13).mean()
-        
-        # Replace infinite values with NaN
-        df = df.replace([np.inf, -np.inf], np.nan)
-        
-        # Clean up NaN values using forward fill then backward fill
-        df = df.ffill().bfill()
-        
-        return df
-
-    def train_advanced_model(self, symbol, df, force_retrain=False, model_type='ensemble', optimize_hyperparams=True):
-        """Train an advanced ML model with optimized parameters"""
-        print(f"\nTraining advanced model for {symbol}")
-        
-        # Add features
-        df = self.add_features(df)
-        
-        # Prepare target variable (future returns)
-        future_returns = df['close'].pct_change(periods=3).shift(-3)  # 3-period future returns
-        df['target'] = np.where(future_returns > 0.002, 1, np.where(future_returns < -0.002, -1, 0))
-        
-        # Remove last 3 rows since they have NaN target values
-        df = df.iloc[:-3]
-        
-        # Split features and target
-        # Exclude non-numeric and datetime columns
-        excluded_columns = ['target', 'timestamp', 'date', 'time', 'open_time', 'close_time', 'symbol']
-        feature_columns = [col for col in df.columns 
-                         if col not in excluded_columns 
-                         and df[col].dtype in ['float64', 'int64']]
-        
-        print(f"Using {len(feature_columns)} features: {feature_columns}")
-        
-        X = df[feature_columns]
-        y = df['target']
-        
-        # Replace infinite values with NaN and then fill them
-        X = X.replace([np.inf, -np.inf], np.nan)
-        # Forward fill then backward fill NaN values
-        X = X.ffill().bfill()
-        
-        # Train/test split (use more recent data for testing)
-        train_size = int(len(df) * 0.8)
-        X_train = X[:train_size]
-        y_train = y[:train_size]
-        X_test = X[train_size:]
-        y_test = y[train_size:]
-        
-        # Scale features
-        scaler = StandardScaler()
-        X_train_scaled = scaler.fit_transform(X_train)
-        X_test_scaled = scaler.transform(X_test)
-        
-        if model_type == 'ensemble':
-            # Create base models
-            models = {
-                'rf': RandomForestClassifier(random_state=42),
-                'gb': GradientBoostingClassifier(random_state=42),
-                'xgb': XGBClassifier(random_state=42)
-            }
-            
-            if optimize_hyperparams:
-                # Hyperparameter grids
-                param_grids = {
-                    'rf': {
-                        'n_estimators': [100, 200],
-                        'max_depth': [10, 20],
-                        'min_samples_split': [5, 10],
-                        'class_weight': ['balanced']
-                    },
-                    'gb': {
-                        'n_estimators': [100, 200],
-                        'learning_rate': [0.05, 0.1],
-                        'max_depth': [3, 5],
-                        'subsample': [0.8, 1.0]
-                    },
-                    'xgb': {
-                        'n_estimators': [100, 200],
-                        'learning_rate': [0.05, 0.1],
-                        'max_depth': [3, 5],
-                        'subsample': [0.8, 1.0]
-                    }
-                }
-                
-                # Optimize each model with increased timeout
-                optimized_models = {}
-                for name, model in models.items():
-                    print(f"Optimizing {name} model...")
-                    grid_search = GridSearchCV(
-                        model, 
-                        param_grids[name],
-                        cv=TimeSeriesSplit(n_splits=5),
-                        scoring='f1_weighted',
-                        n_jobs=-1,
-                        pre_dispatch='2*n_jobs',  # Increase pre-dispatched jobs
-                        error_score='raise'  # Raise errors instead of using nan
-                    )
-                    # Set longer timeout for workers
-                    import joblib
-                    with joblib.parallel_backend('loky', timeout=300):  # 5 minutes timeout
-                        grid_search.fit(X_train_scaled, y_train)
-                    optimized_models[name] = grid_search.best_estimator_
-                    print(f"Best parameters for {name}: {grid_search.best_params_}")
-                
-                # Create voting classifier with optimized models
-                model = VotingClassifier(
-                    estimators=[(name, model) for name, model in optimized_models.items()],
-                    voting='soft'
-                )
-            else:
-                # Create voting classifier with default models
-                model = VotingClassifier(
-                    estimators=[(name, model) for name, model in models.items()],
-                    voting='soft'
-                )
-        
-        elif model_type == 'rf':
-            if optimize_hyperparams:
-                param_grid = {
-                    'n_estimators': [100, 200],
-                    'max_depth': [10, 20],
-                    'min_samples_split': [5, 10],
-                    'class_weight': ['balanced']
-                }
-                model = GridSearchCV(
-                    RandomForestClassifier(random_state=42),
-                    param_grid,
-                    cv=TimeSeriesSplit(n_splits=5),
-                    scoring='f1_weighted',
-                    n_jobs=-1
-                )
-            else:
-                model = RandomForestClassifier(
-                    n_estimators=200,
-                    max_depth=20,
-                    min_samples_split=10,
-                    class_weight='balanced',
-                    random_state=42
-                )
-        
-        elif model_type == 'gb':
-            if optimize_hyperparams:
-                param_grid = {
-                    'n_estimators': [100, 200],
-                    'learning_rate': [0.05, 0.1],
-                    'max_depth': [3, 5],
-                    'subsample': [0.8, 1.0]
-                }
-                model = GridSearchCV(
-                    GradientBoostingClassifier(random_state=42),
-                    param_grid,
-                    cv=TimeSeriesSplit(n_splits=5),
-                    scoring='f1_weighted',
-                    n_jobs=-1
-                )
-            else:
-                model = GradientBoostingClassifier(
-                    n_estimators=200,
-                    learning_rate=0.1,
-                    max_depth=5,
-                    subsample=0.8,
-                    random_state=42
-                )
-        
-        # Train the model
-        print("Training model...")
-        model.fit(X_train_scaled, y_train)
-        
-        # Evaluate model
-        y_pred = model.predict(X_test_scaled)
-        accuracy = accuracy_score(y_test, y_pred)
-        f1 = f1_score(y_test, y_pred, average='weighted')
-        precision = precision_score(y_test, y_pred, average='weighted')
-        recall = recall_score(y_test, y_pred, average='weighted')
-        
-        print("\nModel Performance Metrics:")
-        print(f"Accuracy: {accuracy:.4f}")
-        print(f"F1 Score: {f1:.4f}")
-        print(f"Precision: {precision:.4f}")
-        print(f"Recall: {recall:.4f}")
-        
-        return model, scaler
-    
     def train_and_backtest(self, symbol, model_type='ensemble', force_retrain=False, optimize_hyperparams=True, retrain_interval=0):
         """
         Train a model for a symbol and backtest it
@@ -410,7 +122,7 @@ class MLTrainer:
             return None
         
         # Train advanced model
-        model, scaler = self.train_advanced_model(
+        model, scaler = self.ml_manager.train_advanced_model(
             symbol, 
             df, 
             force_retrain=force_retrain,
@@ -423,7 +135,7 @@ class MLTrainer:
             return None
         
         # Add features for backtesting
-        df_features = self.add_features(df)
+        df_features = self.ml_manager.add_features(df)
         
         # Get feature columns
         excluded_columns = ['target', 'target_1', 'target_3', 'target_5', 'timestamp', 
@@ -441,7 +153,7 @@ class MLTrainer:
             initial_balance=10000,
             position_size_pct=0.2,
             retrain_interval=retrain_interval,
-            retrain_func=lambda: self.train_advanced_model(
+            retrain_func=lambda: self.ml_manager.train_advanced_model(
                 symbol, 
                 df, 
                 force_retrain=True,

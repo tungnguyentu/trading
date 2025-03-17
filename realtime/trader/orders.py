@@ -70,38 +70,19 @@ class OrderExecutor:
         order_side = "BUY" if signal == "LONG" else "SELL"
         
         try:
-            if not self.trader.test_mode:
-                # Real trading mode - execute actual orders
-                # Set leverage
-                self.client.futures_change_leverage(symbol=self.symbol, leverage=self.leverage)
-                
-                # Place market order
-                order = self.client.futures_create_order(
-                    symbol=self.symbol,
-                    side=order_side,
-                    type="MARKET",
-                    quantity=quantity
-                )
-            else:
-                # Test mode - simulate order
-                print(f"TEST MODE: Simulating {signal} order")
-                print(f"Order details:")
-                print(f"  Symbol: {self.symbol}")
-                print(f"  Side: {order_side}")
-                print(f"  Type: MARKET")
-                print(f"  Quantity: {quantity}")
-                print(f"  Price: {current_price:.2f}")
-                print(f"  Value: ${(quantity * current_price):.2f}")
-                print(f"  Required Margin: ${(quantity * current_price / self.leverage):.2f}")
-                
-                # Update test mode position tracking
-                self.trader.position = signal.lower()
-                self.trader.entry_price = current_price
-                self.trader.position_size = quantity
-                self.trader.entry_time = timestamp
+            # Set leverage
+            self.client.futures_change_leverage(symbol=self.symbol, leverage=self.leverage)
+            
+            # Place market order
+            order = self.client.futures_create_order(
+                symbol=self.symbol,
+                side=order_side,
+                type="MARKET",
+                quantity=quantity
+            )
             
             print(f"🟢 {signal} POSITION OPENED")
-            print(f"{'Simulated ' if self.trader.test_mode else ''}Bought {quantity} {self.symbol} at {current_price:.2f}")
+            print(f"Bought {quantity} {self.symbol} at {current_price:.2f}")
             
             # Record the trade
             self.trader.trading_history.append({
@@ -109,33 +90,28 @@ class OrderExecutor:
                 "action": f"OPEN_{signal}",
                 "price": current_price,
                 "quantity": quantity,
-                "reason": "signal",
-                "test_mode": self.trader.test_mode
+                "reason": "signal"
             })
             
             # Send notification
-            notification_msg = f"🟢 {signal} POSITION OPENED on {self.symbol}\n"
-            if self.trader.test_mode:
-                notification_msg += "TEST MODE\n"
-            notification_msg += f"Quantity: {quantity}\n"
-            notification_msg += f"Price: {current_price:.2f}\n"
-            notification_msg += f"Leverage: {self.leverage}x"
-            
-            self.trader.send_notification(notification_msg)
+            self.trader.send_notification(
+                f"🟢 {signal} POSITION OPENED on {self.symbol}\n"
+                f"Quantity: {quantity}\n"
+                f"Price: {current_price:.2f}\n"
+                f"Leverage: {self.leverage}x"
+            )
             
             # Reset pyramid entries counter
             self.trader.pyramid_entries = 0
             
             # Set up take profit and stop loss orders if not using dynamic TP/SL
-            if not self.trader.test_mode and not self.use_dynamic_take_profit and (self.fixed_tp > 0 or self.fixed_sl > 0):
+            if not self.use_dynamic_take_profit and (self.fixed_tp > 0 or self.fixed_sl > 0):
                 self.place_take_profit_stop_loss_orders(signal, current_price, quantity)
             
             return True
             
         except BinanceAPIException as e:
             print(f"Error executing trade: {e}")
-            if self.trader.test_mode:
-                print("Note: This error occurred in test mode and can be ignored")
             return False
     
     def place_take_profit_stop_loss_orders(self, signal, entry_price, quantity):

@@ -453,25 +453,17 @@ class MLManager:
             df["low"].shift() - df["low"]
         )
 
-        # Smooth +DM and -DM with handling for zero ATR
-        df["plus_di"] = 0.0  # Initialize with zeros
-        df["minus_di"] = 0.0  # Initialize with zeros
-        
-        # Calculate DI+ and DI- only where ATR is non-zero
-        mask = df["atr_adx"] > 0
-        df.loc[mask, "plus_di"] = 100 * (
-            df.loc[mask, "plus_dm"].rolling(window=window).mean() / df.loc[mask, "atr_adx"]
+        # Smooth +DM and -DM
+        df["plus_di"] = 100 * (
+            df["plus_dm"].rolling(window=window).mean() / df["atr_adx"]
         )
-        df.loc[mask, "minus_di"] = 100 * (
-            df.loc[mask, "minus_dm"].rolling(window=window).mean() / df.loc[mask, "atr_adx"]
+        df["minus_di"] = 100 * (
+            df["minus_dm"].rolling(window=window).mean() / df["atr_adx"]
         )
 
-        # Directional Movement Index (DX) with handling for zero denominator
-        df["dx"] = 0.0  # Initialize with zeros
-        di_sum = df["plus_di"] + df["minus_di"]
-        mask = di_sum > 0  # Only calculate where sum is non-zero
-        df.loc[mask, "dx"] = 100 * (
-            abs(df.loc[mask, "plus_di"] - df.loc[mask, "minus_di"]) / di_sum[mask]
+        # Directional Movement Index (DX)
+        df["dx"] = 100 * (
+            abs(df["plus_di"] - df["minus_di"]) / (df["plus_di"] + df["minus_di"])
         )
 
         # Average Directional Index (ADX)

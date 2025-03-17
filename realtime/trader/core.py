@@ -122,11 +122,11 @@ class RealtimeTrader:
         if not api_key or not api_secret:
             raise ValueError("Binance API credentials not found in environment variables")
         
-        self.client = Client(api_key, api_secret)
+        self.client = Client(api_key, api_secret, testnet=True)
         
         # Test connection
         try:
-            self.client.get_account()
+            self.client.futures_account()
             print("Successfully connected to Binance API")
         except BinanceAPIException as e:
             print(f"Error connecting to Binance API: {e}")
