@@ -233,7 +233,7 @@ class RealtimeTrader:
                 self.client = Client("", "")  # Public API access for market data only
                 return
 
-        self.client = Client(self.api_key, self.api_secret)
+        self.client = Client(self.api_key, self.api_secret, testnet=True)
 
         # Set leverage for futures trading (only in real mode)
         if not self.test_mode:

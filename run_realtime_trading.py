@@ -6,7 +6,7 @@ Main script to run the real-time trading bot.
 import argparse
 import os
 from dotenv import load_dotenv
-from realtime.trader import RealtimeTrader
+from realtime.real_trader import RealtimeTrader
 
 def parse_arguments():
     """Parse command line arguments"""
